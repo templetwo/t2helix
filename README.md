@@ -13,8 +13,8 @@ Plus an in-process MCP server exposing five tools so Claude can write back: `rec
 
 ## Where state lives
 
-`${CLAUDE_PLUGIN_DATA}/chronicle.db` (SQLite, WAL mode). Falls back to `~/.t2helix-data/chronicle.db` outside the plugin context, or `$T2HELIX_DATA_DIR` if set. The chronicle survives plugin updates and Claude Code session boundaries.
+`~/.t2helix-data/chronicle.db` by default (SQLite, WAL mode, FTS5 indexed). Set `T2HELIX_DATA_DIR` to override. The path lives outside the plugin install, so it survives plugin updates and Claude Code session boundaries.
 
 ## Status
 
-v0.0.1 — recall + compass only. PostToolBatch goal coherence, PreCompact archive, and Stop session synthesis ship in v0.2+.
+v0.0.3 — recall + compass + MCP server registration. PostToolBatch goal coherence, PreCompact archive, and Stop session synthesis ship in v0.2+. The `edit-no-context` rule moved to `lib/rules/optional.json` in v0.0.2 pending the goal-anchor skill (v0.1+).
