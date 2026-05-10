@@ -1,0 +1,17 @@
+{
+  "version": "1.0",
+  "description": "Bundled rules that aren't ready for default-enabled status. Opt-in by copying entries into compass-rules.json (or, in v0.1+, by enabling them via configuration). Each rule here records the prerequisite that must be met before it graduates to bundled.",
+  "rules": [
+    {
+      "id": "edit-no-context",
+      "classification": "PAUSE",
+      "tool": "Edit",
+      "pattern": null,
+      "condition": "no_session_goal",
+      "reason": "No session goal set. Setting one keeps work coherent — call set_goal first.",
+      "_graduation_prerequisite": "Goal-anchor skill exists and set_goal is a natural reflex at session start. Without it, this rule fires PAUSE on the first edit of every session and produces 'turn this off' friction. Re-evaluate at v0.1+ once goal-anchor skill ships and dogfood shows users reaching for set_goal naturally.",
+      "_first_pulled_at": "2026-05-10",
+      "_first_pulled_reason": "Pre-dogfood. The PAUSE classification fires on every uninitialized session, which is the realistic state for the first weeks of any user's relationship with the tool. Friction outweighs signal until the goal-anchor reflex exists."
+    }
+  ]
+}

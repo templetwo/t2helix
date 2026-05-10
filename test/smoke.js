@@ -90,13 +90,12 @@ test('compass: ls -la → OPEN (no rule fires)', () => {
   assert.strictEqual(r.classification, 'OPEN');
 });
 
-test('compass: edit without goal → PAUSE', () => {
+test('compass: edit without goal → OPEN (edit-no-context moved to optional.json in v0.0.2)', () => {
   const r = compass.classify(
     { tool_name: 'Edit', tool_input: { file_path: '/tmp/x.js' } },
     { has_goal: false }
   );
-  assert.strictEqual(r.classification, 'PAUSE');
-  assert.strictEqual(r.rule_id, 'edit-no-context');
+  assert.strictEqual(r.classification, 'OPEN');
 });
 
 test('compass: edit with goal → OPEN', () => {
@@ -105,6 +104,16 @@ test('compass: edit with goal → OPEN', () => {
     { has_goal: true }
   );
   assert.strictEqual(r.classification, 'OPEN');
+});
+
+test('compass: optional.json contains edit-no-context with graduation metadata', () => {
+  const fs = require('fs');
+  const path = require('path');
+  const optional = JSON.parse(fs.readFileSync(path.join(__dirname, '..', 'lib', 'rules', 'optional.json'), 'utf8'));
+  const enc = optional.rules.find(r => r.id === 'edit-no-context');
+  assert.ok(enc, 'edit-no-context should exist in optional.json');
+  assert.ok(enc._graduation_prerequisite, 'optional rules must declare graduation prerequisite');
+  assert.ok(enc._first_pulled_at, 'optional rules must record when first pulled');
 });
 
 test('compass: PEM private key in arg → PAUSE', () => {

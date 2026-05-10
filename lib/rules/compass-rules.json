@@ -56,14 +56,6 @@
       "tool": "Bash",
       "pattern": "(?i)(?:aws_secret|api_key|bearer\\s+[a-f0-9]{20,}|-----BEGIN\\s+(?:RSA|OPENSSH|PGP)\\s+PRIVATE)",
       "reason": "Possible credential in command. Confirm this isn't being logged or written to disk in cleartext."
-    },
-    {
-      "id": "edit-no-context",
-      "classification": "PAUSE",
-      "tool": "Edit",
-      "pattern": null,
-      "condition": "no_session_goal",
-      "reason": "No session goal set. Setting one keeps work coherent — call set_goal first."
     }
   ]
 }
