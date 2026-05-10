@@ -1,0 +1,69 @@
+{
+  "version": "1.0",
+  "rules": [
+    {
+      "id": "rm-rf-wildcard",
+      "classification": "WITNESS",
+      "tool": "Bash",
+      "pattern": "(?:^|[\\s;&|`(])rm\\s+(?:-[rRf]+\\s+)+(?:[^\\s]*\\*|/[^\\s]*|~[^\\s]*)",
+      "reason": "Recursive force delete with wildcard or absolute/home path. Verify the target before proceeding."
+    },
+    {
+      "id": "rm-rf-root",
+      "classification": "WITNESS",
+      "tool": "Bash",
+      "pattern": "rm\\s+(?:-[rRf]+\\s+)+/(?:\\s|$)",
+      "reason": "rm -rf / detected. Refusing without explicit human confirmation."
+    },
+    {
+      "id": "git-push-force",
+      "classification": "WITNESS",
+      "tool": "Bash",
+      "pattern": "git\\s+push\\s+(?:[^|;&]*\\s+)?(?:--force(?!-with-lease)|-f)\\b",
+      "reason": "Force push rewrites remote history. --force-with-lease is safer; verify no collaborator commits will be lost."
+    },
+    {
+      "id": "git-reset-hard",
+      "classification": "WITNESS",
+      "tool": "Bash",
+      "pattern": "git\\s+reset\\s+--hard\\b",
+      "reason": "git reset --hard discards uncommitted work. Confirm there is nothing worth keeping in the working tree."
+    },
+    {
+      "id": "drop-table-or-db",
+      "classification": "WITNESS",
+      "tool": "Bash",
+      "pattern": "(?i)\\bdrop\\s+(?:table|database|schema)\\b",
+      "reason": "Destructive schema operation. Confirm backup and target environment before proceeding."
+    },
+    {
+      "id": "deploy-prod",
+      "classification": "WITNESS",
+      "tool": "Bash",
+      "pattern": "(?i)\\b(?:kubectl|terraform|helm|aws|gcloud)\\b[^|;&]*\\b(?:prod|production)\\b",
+      "reason": "Production deployment surface detected. Confirm change is reviewed, tested, and intentional."
+    },
+    {
+      "id": "no-verify",
+      "classification": "WITNESS",
+      "tool": "Bash",
+      "pattern": "(?:git\\s+commit|git\\s+merge|git\\s+rebase)[^|;&]*--no-verify\\b",
+      "reason": "--no-verify skips pre-commit hooks. Don't bypass the safety net unless explicitly authorized."
+    },
+    {
+      "id": "credential-paste",
+      "classification": "PAUSE",
+      "tool": "Bash",
+      "pattern": "(?i)(?:aws_secret|api_key|bearer\\s+[a-f0-9]{20,}|-----BEGIN\\s+(?:RSA|OPENSSH|PGP)\\s+PRIVATE)",
+      "reason": "Possible credential in command. Confirm this isn't being logged or written to disk in cleartext."
+    },
+    {
+      "id": "edit-no-context",
+      "classification": "PAUSE",
+      "tool": "Edit",
+      "pattern": null,
+      "condition": "no_session_goal",
+      "reason": "No session goal set. Setting one keeps work coherent — call set_goal first."
+    }
+  ]
+}

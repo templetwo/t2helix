@@ -1,0 +1,8 @@
+{
+  "name": "t2helix",
+  "description": "Persistent recall + pre-action compass for Claude Code. Memory survives between sessions; the editor pauses you before destructive ops.",
+  "author": {
+    "name": "Anthony Vasquez Sr.",
+    "url": "https://github.com/templetwo"
+  }
+}
