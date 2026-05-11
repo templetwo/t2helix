@@ -9,9 +9,11 @@
     "node": ">=20 <26"
   },
   "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.29.0",
     "better-sqlite3": "^11.3.0"
   },
   "scripts": {
-    "smoke": "node test/smoke.js"
+    "smoke": "node test/smoke.js",
+    "serve": "node mcp/server.js --transport sse --port 3742"
   }
 }
