@@ -4,7 +4,7 @@
 const readline = require('readline');
 const ch = require('../lib/chronicle');
 
-const SERVER_INFO = { name: 't2helix', version: '0.0.4' };
+const SERVER_INFO = { name: 't2helix', version: require('../package.json').version };
 
 const TOOLS = [
   {

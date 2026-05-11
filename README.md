@@ -56,7 +56,7 @@ Every chronicle write (goal, insight, thread, compass log row, pending confirmat
 npm run smoke
 ```
 
-Runs `test/smoke.js` against an isolated temp data dir. Covers compass rule classifications, chronicle CRUD, session-state file round-trip, `setGoal` preserve-prior behavior, `getCompassHistory` filters, the full `pending_confirmations` lifecycle, cross-session isolation, and single-use enforcement. 37 tests.
+Runs `test/smoke.js` against an isolated temp data dir. Covers compass rule classifications, chronicle CRUD, session-state file round-trip, `setGoal` preserve-prior behavior, `getCompassHistory` filters, the full `pending_confirmations` lifecycle, cross-session isolation, and single-use enforcement. 44 tests.
 
 ## Status
 
