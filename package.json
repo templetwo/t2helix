@@ -1,6 +1,6 @@
 {
   "name": "t2helix",
-  "version": "0.0.3",
+  "version": "0.0.4",
   "description": "Persistent recall and pre-action compass for Claude Code. Local-only, SQLite-backed.",
   "license": "MIT",
   "author": "Anthony Vasquez Sr. (templetwo)",

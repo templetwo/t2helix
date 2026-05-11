@@ -4,7 +4,7 @@
 const readline = require('readline');
 const ch = require('../lib/chronicle');
 
-const SERVER_INFO = { name: 't2helix', version: '0.0.1' };
+const SERVER_INFO = { name: 't2helix', version: '0.0.4' };
 
 const TOOLS = [
   {
@@ -64,6 +64,48 @@ const TOOLS = [
     name: 'get_state',
     description: 'Get the current session goal, recent open threads, and recent insights.',
     inputSchema: { type: 'object', properties: {} }
+  },
+  {
+    name: 'recall_compass',
+    description: 'Query the compass log of past PreToolUse classifications. Useful for reviewing which tool calls hit safety rules and which passed through.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        limit: { type: 'number', default: 20 },
+        classification: {
+          type: 'string',
+          enum: ['WITNESS', 'PAUSE', 'OPEN'],
+          description: 'Filter by classification. Omit for all.'
+        },
+        matched_only: {
+          type: 'boolean',
+          default: false,
+          description: 'When true, only return entries where a rule matched (excludes OPEN pass-throughs).'
+        }
+      }
+    }
+  },
+  {
+    name: 'confirm_pending',
+    description: 'Approve a pending PAUSE confirmation by token. After approval, retry the original tool call within 10 minutes; the compass will consume the approval and let it through. Single-use per token.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        token: { type: 'string', description: 'Token from the deny message (e.g., "ab12cd34ef567890").' }
+      },
+      required: ['token']
+    }
+  },
+  {
+    name: 'list_pending',
+    description: 'List unexpired pending or approved confirmation requests. Useful for reviewing what is waiting to be approved or has been approved but not yet consumed.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        session_id: { type: 'string', description: 'Filter to a specific session_id. Omit for all unexpired entries.' },
+        limit: { type: 'number', default: 20 }
+      }
+    }
   }
 ];
 
@@ -78,7 +120,15 @@ function textContent(obj) {
 }
 
 function sessionId(args) {
-  return (args && args.session_id) || process.env.T2HELIX_SESSION_ID || 'mcp-session';
+  // Resolution chain (highest precedence first):
+  //   1. Explicit session_id in tool args (rare; reserved for testing/override)
+  //   2. T2HELIX_SESSION_ID env var (manual override)
+  //   3. Current-session state file written by hooks (the real signature)
+  //   4. Literal 'mcp-session' fallback (only when hooks haven't fired yet)
+  return (args && args.session_id)
+    || process.env.T2HELIX_SESSION_ID
+    || ch.readCurrentSession()
+    || 'mcp-session';
 }
 
 function handleToolCall(name, args) {
@@ -114,6 +164,25 @@ function handleToolCall(name, args) {
     }
     case 'get_state': {
       return textContent(ch.getState(sid));
+    }
+    case 'recall_compass': {
+      const entries = ch.getCompassHistory({
+        limit: args.limit || 20,
+        classification: args.classification,
+        matched_only: args.matched_only
+      });
+      return textContent({ count: entries.length, entries });
+    }
+    case 'confirm_pending': {
+      const result = ch.approveConfirmation({ token: args.token });
+      return textContent(result);
+    }
+    case 'list_pending': {
+      const entries = ch.listPendingConfirmations({
+        session_id: args.session_id,
+        limit: args.limit || 20
+      });
+      return textContent({ count: entries.length, entries });
     }
     default:
       throw new Error(`unknown tool: ${name}`);

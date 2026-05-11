@@ -1,16 +1,8 @@
 #!/usr/bin/env node
 'use strict';
 
-const { recall, getGoal } = require('../lib/chronicle');
-
-async function readStdin() {
-  return new Promise((resolve) => {
-    let data = '';
-    process.stdin.on('data', chunk => { data += chunk; });
-    process.stdin.on('end', () => resolve(data));
-    process.stdin.on('error', () => resolve(data));
-  });
-}
+const { recall, getGoal, writeCurrentSession } = require('../lib/chronicle');
+const { readStdin } = require('../lib/hook-io');
 
 function buildContext({ goal, hits }) {
   const lines = ['## T2Helix recall'];
@@ -44,6 +36,12 @@ async function main() {
 
   const session_id = input.session_id || 'unknown';
   const prompt = (input.prompt || '').slice(0, 4000);
+
+  // Write current session_id to a state file so the MCP server (which doesn't
+  // receive session_id per-call) can use the same signature as the hooks.
+  if (session_id && session_id !== 'unknown') {
+    writeCurrentSession(session_id);
+  }
 
   let ctx = '';
   try {

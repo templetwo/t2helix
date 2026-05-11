@@ -1,6 +1,6 @@
 {
   "name": "t2helix",
-  "version": "0.0.3",
+  "version": "0.0.4",
   "description": "Persistent recall + pre-action compass for Claude Code. Memory survives between sessions; the editor pauses you before destructive ops.",
   "author": {
     "name": "Anthony Vasquez Sr.",

@@ -61,3 +61,21 @@ CREATE TABLE IF NOT EXISTS compass_log (
 
 CREATE INDEX IF NOT EXISTS idx_compass_session ON compass_log(session_id);
 CREATE INDEX IF NOT EXISTS idx_compass_classification ON compass_log(classification);
+
+CREATE TABLE IF NOT EXISTS pending_confirmations (
+  id INTEGER PRIMARY KEY,
+  token TEXT NOT NULL UNIQUE,
+  session_id TEXT NOT NULL,
+  action_hash TEXT NOT NULL,
+  action_summary TEXT NOT NULL,
+  rule_matched TEXT,
+  reason TEXT,
+  status TEXT NOT NULL DEFAULT 'pending',
+  created_at INTEGER NOT NULL,
+  approved_at INTEGER,
+  used_at INTEGER,
+  expires_at INTEGER NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_pending_token ON pending_confirmations(token);
+CREATE INDEX IF NOT EXISTS idx_pending_lookup ON pending_confirmations(session_id, action_hash, status);
