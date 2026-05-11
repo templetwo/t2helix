@@ -69,6 +69,22 @@ Inside the data dir: `chronicle.db` (SQLite, WAL mode, FTS5 indexed) and `.curre
 
 Every chronicle write (goal, insight, thread, compass log row, pending confirmation) is keyed by a `session_id`. The hooks receive Claude Code's real session UUID from stdin and persist it to `.current_session`. The MCP server reads that file in its `sessionId()` resolution chain, so MCP tool calls write under the same signature the hooks use. Without this unification, MCP-side writes (like `set_goal`) would key under a fallback constant and be invisible to hook-side reads (the recall hook's "no session goal" pathology in pre-0.0.4 builds).
 
+## SSE mode (any MCP client)
+
+The default `stdio` transport is used automatically by the Claude Code plugin. For any other MCP client — Claude.ai web connectors, other AI tools, or custom integrations — run the server in SSE mode:
+
+```bash
+# Start the SSE server on port 3742
+npm run serve
+
+# For web access, expose via Cloudflare tunnel
+cloudflare tunnel --url http://localhost:3742
+```
+
+Then register `http://localhost:3742/sse` (or your tunnel URL) as an MCP connector in your client. The tool surface is identical to the Claude Code plugin — same eight tools, same chronicle, same data dir.
+
+The stdio path (Claude Code plugin) is unaffected. Both can run simultaneously from the same data dir.
+
 ## Tests
 
 ```bash

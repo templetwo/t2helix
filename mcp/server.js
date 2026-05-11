@@ -2,9 +2,20 @@
 'use strict';
 
 const readline = require('readline');
+const http = require('http');
 const ch = require('../lib/chronicle');
 
 const SERVER_INFO = { name: 't2helix', version: require('../package.json').version };
+
+// Transport flag: --transport stdio (default) | --transport sse
+// Port flag:      --port 3742 (default, SSE only)
+const argv = process.argv.slice(2);
+function argValue(flag) {
+  const i = argv.indexOf(flag);
+  return i !== -1 ? argv[i + 1] : null;
+}
+const TRANSPORT = argValue('--transport') || 'stdio';
+const PORT = parseInt(argValue('--port') || '3742', 10);
 
 const TOOLS = [
   {
@@ -216,16 +227,64 @@ function handleMessage(msg) {
   }
 }
 
-function main() {
+// ── SSE transport ─────────────────────────────────────────────────────────────
+
+function startSSE() {
+  const { Server } = require('@modelcontextprotocol/sdk/server/index.js');
+  const { SSEServerTransport } = require('@modelcontextprotocol/sdk/server/sse.js');
+  const { ListToolsRequestSchema, CallToolRequestSchema } = require('@modelcontextprotocol/sdk/types.js');
+
+  // One SSEServerTransport per active SSE connection; keyed by sessionId.
+  const transports = new Map();
+
+  const httpServer = http.createServer(async (req, res) => {
+    const url = new URL(req.url, `http://localhost:${PORT}`);
+
+    if (req.method === 'GET' && url.pathname === '/sse') {
+      const mcpServer = new Server(SERVER_INFO, { capabilities: { tools: {} } });
+      mcpServer.setRequestHandler(ListToolsRequestSchema, () => ({ tools: TOOLS }));
+      mcpServer.setRequestHandler(CallToolRequestSchema, ({ params }) =>
+        handleToolCall(params.name, params.arguments || {})
+      );
+
+      const transport = new SSEServerTransport('/messages', res);
+      transports.set(transport.sessionId, transport);
+      transport.onclose = () => { transports.delete(transport.sessionId); };
+
+      await mcpServer.connect(transport);
+
+    } else if (req.method === 'POST' && url.pathname === '/messages') {
+      const sid = url.searchParams.get('sessionId');
+      const transport = transports.get(sid);
+      if (!transport) { res.writeHead(400).end('Unknown sessionId'); return; }
+      await transport.handlePostMessage(req, res);
+
+    } else {
+      res.writeHead(404).end('Not found');
+    }
+  });
+
+  httpServer.listen(PORT, () => {
+    process.stderr.write(`T2Helix MCP (SSE) listening on http://localhost:${PORT}/sse\n`);
+  });
+
+  const shutdown = () => {
+    httpServer.close();
+    try { ch.close(); } catch (_) {}
+    process.exit(0);
+  };
+  process.on('SIGINT', shutdown);
+  process.on('SIGTERM', shutdown);
+}
+
+// ── stdio transport (default, used by Claude Code plugin) ─────────────────────
+
+function startStdio() {
   const rl = readline.createInterface({ input: process.stdin, terminal: false });
   rl.on('line', line => {
     if (!line || !line.trim()) return;
     let msg;
-    try {
-      msg = JSON.parse(line);
-    } catch {
-      return;
-    }
+    try { msg = JSON.parse(line); } catch { return; }
     const reply = handleMessage(msg);
     if (reply) process.stdout.write(JSON.stringify(reply) + '\n');
   });
@@ -234,4 +293,10 @@ function main() {
   process.on('SIGTERM', () => process.exit(0));
 }
 
-main();
+// ── Entry point ───────────────────────────────────────────────────────────────
+
+if (TRANSPORT === 'sse') {
+  startSSE();
+} else {
+  startStdio();
+}
