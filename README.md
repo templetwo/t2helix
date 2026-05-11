@@ -79,9 +79,12 @@ Runs `test/smoke.js` against an isolated temp data dir. Covers compass rule clas
 
 ## Status
 
-**v0.0.4** — production-ready core:
+**v0.0.5** — five hooks, full session arc:
 
 - Recall hook (UserPromptSubmit) + compass hook (PreToolUse)
+- PostToolUse hook — records significant tool actions (Bash, Edit, Write, MultiEdit) to the chronicle
+- PreCompact hook — archives goal + open threads + insight count before context compression
+- Stop hook — writes session synthesis on close (goal, threads, compass summary)
 - MCP server with eight tools
 - PAUSE soft-deny with token-based override (`pending_confirmations` table, `confirm_pending` tool, single-use enforcement)
 - `recall_compass` — read your own compass gate history
@@ -89,4 +92,4 @@ Runs `test/smoke.js` against an isolated temp data dir. Covers compass rule clas
 - `set_goal` preserve-prior — prior goal archived as a `reflection`-layer insight before overwrite
 - 44 smoke tests
 
-Coming in v0.1+: goal-anchor skill, PostToolBatch goal coherence, PreCompact archive, Stop session synthesis. The `edit-no-context` compass rule ships in v0.1 pending the goal-anchor skill.
+Coming in v0.1+: goal-anchor skill. The `edit-no-context` compass rule ships in v0.1 pending the goal-anchor skill.
