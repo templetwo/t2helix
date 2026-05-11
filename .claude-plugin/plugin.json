@@ -1,7 +1,6 @@
 {
   "name": "t2helix",
-  "version": "0.0.4",
-  "description": "Persistent recall + pre-action compass for Claude Code. Memory survives between sessions; the editor pauses you before destructive ops.",
+  "description": "Persistent recall and pre-action compass for Claude Code. Local-only, SQLite-backed. Injects past insights on every prompt; gates dangerous tool calls before they execute.",
   "author": {
     "name": "Anthony Vasquez Sr.",
     "url": "https://github.com/templetwo"

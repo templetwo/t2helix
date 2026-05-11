@@ -1,0 +1,25 @@
+{
+  "$schema": "https://anthropic.com/claude-code/marketplace.schema.json",
+  "name": "templetwo-t2helix",
+  "description": "T2Helix — persistent recall and pre-action compass for Claude Code",
+  "owner": {
+    "name": "Anthony Vasquez Sr. (templetwo)",
+    "url": "https://github.com/templetwo"
+  },
+  "plugins": [
+    {
+      "name": "t2helix",
+      "description": "Persistent recall and pre-action compass for Claude Code. Local-only, SQLite-backed. Injects past insights on every prompt; gates dangerous tool calls before they execute.",
+      "author": {
+        "name": "Anthony Vasquez Sr.",
+        "url": "https://github.com/templetwo"
+      },
+      "category": "productivity",
+      "source": {
+        "source": "github",
+        "repo": "templetwo/t2helix"
+      },
+      "homepage": "https://github.com/templetwo/t2helix"
+    }
+  ]
+}
