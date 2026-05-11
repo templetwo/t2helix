@@ -2,6 +2,21 @@
 
 Persistent recall and pre-action compass for Claude Code, running locally on your machine.
 
+## Install
+
+**Requires Node 20–25.** Node v26+ is not yet supported by the SQLite dependency.
+
+```bash
+# Use Node 22 LTS (recommended)
+nvm use 22
+
+# Add the T2Helix marketplace and install
+claude plugin marketplace add https://github.com/templetwo/t2helix
+claude plugin install t2helix
+```
+
+That's it. Claude Code will handle hooks and MCP server registration automatically.
+
 ## What it does
 
 Two hooks integrated into Claude Code's agent loop:
@@ -36,15 +51,19 @@ WITNESS has no override path — those operations require manual rule edits.
 
 ## Where state lives
 
-The data dir is resolved in this order (highest precedence first):
+Under Claude Code (the normal install path), data lives at:
+
+```
+~/.claude/plugins/data/t2helix-inline/
+```
+
+The full resolution order (highest precedence first):
 
 1. `T2HELIX_DATA_DIR` — manual override
-2. `CLAUDE_PLUGIN_DATA` — set by Claude Code when running as a plugin; points at the plugin's data sandbox (e.g., `~/.claude/plugins/data/t2helix-inline/`)
-3. `~/.t2helix-data/` — standalone fallback when neither env var is set
+2. `CLAUDE_PLUGIN_DATA` — set by Claude Code when running as a plugin; resolves to `~/.claude/plugins/data/t2helix-inline/`
+3. `~/.t2helix-data/` — standalone fallback when neither env var is set (not the path you want under Claude Code)
 
 Inside the data dir: `chronicle.db` (SQLite, WAL mode, FTS5 indexed) and `.current_session` (the active `session_id`, written by the hooks so the MCP server can use the same signature). The path lives outside the plugin install, so it survives plugin updates and Claude Code session boundaries.
-
-To find your live data when running under Claude Code, check `$CLAUDE_PLUGIN_DATA` from a shell inside the plugin process, or look at `~/.claude/plugins/data/t2helix-inline/` — not the `~/.t2helix-data/` fallback path.
 
 ## Session signature
 
@@ -60,4 +79,14 @@ Runs `test/smoke.js` against an isolated temp data dir. Covers compass rule clas
 
 ## Status
 
-v0.0.4 — recall + compass + MCP server + PAUSE override surface + session_id unification + setGoal preserve-prior. PostToolBatch goal coherence, PreCompact archive, and Stop session synthesis ship in v0.2+. The `edit-no-context` rule moved to `lib/rules/optional.json` in v0.0.2 pending the goal-anchor skill (v0.1+).
+**v0.0.4** — production-ready core:
+
+- Recall hook (UserPromptSubmit) + compass hook (PreToolUse)
+- MCP server with eight tools
+- PAUSE soft-deny with token-based override (`pending_confirmations` table, `confirm_pending` tool, single-use enforcement)
+- `recall_compass` — read your own compass gate history
+- Session ID unification via `.current_session` file — MCP writes and hook writes key under the same session UUID
+- `set_goal` preserve-prior — prior goal archived as a `reflection`-layer insight before overwrite
+- 44 smoke tests
+
+Coming in v0.1+: goal-anchor skill, PostToolBatch goal coherence, PreCompact archive, Stop session synthesis. The `edit-no-context` compass rule ships in v0.1 pending the goal-anchor skill.
