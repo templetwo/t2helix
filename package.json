@@ -14,6 +14,7 @@
   },
   "scripts": {
     "smoke": "node test/smoke.js",
+    "regression": "node test/regression.js",
     "serve": "node mcp/server.js --transport sse --port 3742"
   }
 }
