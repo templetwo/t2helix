@@ -1,16 +1,16 @@
 {
   "name": "t2helix",
-  "version": "0.0.5",
+  "version": "0.0.6",
   "description": "Persistent recall and pre-action compass for Claude Code. Local-only, SQLite-backed.",
   "license": "CC-BY-NC-SA-4.0",
   "author": "Anthony Vasquez Sr. (templetwo)",
   "type": "commonjs",
   "engines": {
-    "node": ">=20 <26"
+    "node": ">=20 <27"
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.29.0",
-    "better-sqlite3": "^11.3.0"
+    "better-sqlite3": "^12.10.0"
   },
   "scripts": {
     "smoke": "node test/smoke.js",
