@@ -576,6 +576,167 @@ test('coupling: thresholds exported and have sensible MVP values', () => {
   assert.strictEqual(FAILURE_RATIO, 0.5, 'FAILURE_RATIO should be 0.5 for MVP');
 });
 
+// ============================================================================
+// compass → memory: recordCompassFire (helix criterion #3)
+// PAUSE/WITNESS classifications get a high-intensity chronicle entry tagged
+// with action:<hash>. Same hash on PostToolUse entries closes the loop.
+// ============================================================================
+
+test('recordCompassFire: writes a chronicle entry tagged compass-fire + classification + action_hash', () => {
+  const sid = 'cf-tags-' + Date.now();
+  const action = 'Bash: rm -rf /tmp/foo/*';
+  ch.recordCompassFire({
+    session_id: sid,
+    action_summary: action,
+    classification: 'WITNESS',
+    rule_matched: 'rm-rf-wildcard',
+    reason: 'wildcard rm under /tmp'
+  });
+  const hits = ch.recall({ query: 'rm-rf-wildcard', topK: 10 });
+  const hit = hits.find(h => h.tags && h.tags.includes('compass-fire'));
+  assert.ok(hit, 'should find compass-fire entry via recall');
+  assert.ok(hit.tags.includes('classification:WITNESS'), 'tags must include classification');
+  assert.ok(hit.tags.includes('rule:rm-rf-wildcard'), 'tags must include rule:<id> when rule matched');
+  assert.ok(hit.tags.some(t => t.startsWith('action:')), 'tags must include action:<hash>');
+  assert.strictEqual(hit.domain, 'compass-fire');
+  assert.strictEqual(hit.layer, 'reflection');
+  assert.strictEqual(hit.intensity, 0.7);
+});
+
+test('recordCompassFire: action_hash is stable — same summary → same tag → recallable by tag', () => {
+  const sid = 'cf-link-' + Date.now();
+  const action = 'Bash: git push --force origin main-' + Date.now();
+  const hash = ch.actionHash(action);
+
+  ch.recordCompassFire({
+    session_id: sid, action_summary: action, classification: 'WITNESS',
+    rule_matched: 'force-push', reason: 'force push to main'
+  });
+  // Simulate the matching PostToolUse entry tagged with the same action hash.
+  ch.record({
+    session_id: sid,
+    content: `[PostToolUse] ${action}\nResult: ok`,
+    domain: 'session-action',
+    tags: ['post-tool-use', 'bash', 'outcome:success', `action:${hash}`],
+    intensity: 0.2
+  });
+
+  // Recall by the shared tag should return BOTH endpoints — the chain.
+  const chain = ch.recall({ query: 'git push force', topK: 20, tag: `action:${hash}`, include_meta: true });
+  assert.ok(chain.length >= 2, `should find both compass-fire + PostToolUse, got ${chain.length}`);
+  assert.ok(chain.some(h => h.tags && h.tags.includes('compass-fire')), 'chain must include the compass-fire entry');
+  assert.ok(chain.some(h => h.tags && h.tags.includes('post-tool-use')), 'chain must include the PostToolUse entry');
+});
+
+test('recordCompassFire: PAUSE classification round-trips', () => {
+  const sid = 'cf-pause-' + Date.now();
+  const action = 'Bash: echo "-----BEGIN OPENSSH PRIVATE KEY-----" > k-' + Date.now();
+  ch.recordCompassFire({
+    session_id: sid, action_summary: action, classification: 'PAUSE',
+    rule_matched: 'credential-paste', reason: 'private key in command'
+  });
+  const hits = ch.recall({ query: 'OPENSSH credential', topK: 10 });
+  const hit = hits.find(h => h.tags && h.tags.includes('classification:PAUSE'));
+  assert.ok(hit, 'should find the PAUSE compass-fire');
+});
+
+test('recordCompassFire: missing rule_matched still writes (rule tag is conditional)', () => {
+  const sid = 'cf-norule-' + Date.now();
+  ch.recordCompassFire({
+    session_id: sid,
+    action_summary: 'Bash: weird thing-' + Date.now(),
+    classification: 'PAUSE',
+    rule_matched: null,
+    reason: 'memory-escalated, no upstream rule'
+  });
+  const hits = ch.recall({ query: 'memory-escalated weird thing', topK: 10 });
+  const hit = hits.find(h => h.tags && h.tags.includes('compass-fire'));
+  assert.ok(hit, 'should still find the entry');
+  assert.ok(!hit.tags.some(t => t.startsWith('rule:')), 'no rule tag when rule_matched is null');
+});
+
+// ============================================================================
+// End-to-end helix loop (criterion #4) — proves memory→compass and
+// compass→memory work together. Exercises the full chain in lib space:
+//   1. Seed past failures (criterion #1's substrate)
+//   2. classify() returns OPEN for a similar new action
+//   3. recall+coupling escalates to PAUSE (criterion #2)
+//   4. recordCompassFire writes the event with action:<hash> (criterion #3)
+//   5. Subsequent PostToolUse-equivalent record() with outcome:success and
+//      the SAME action:<hash> closes the chain
+//   6. Recall by the action:<hash> tag returns both endpoints
+// ============================================================================
+
+test('e2e helix loop: past failures → escalation → compass-fire → outcome → chain recall', () => {
+  const sid = 'e2e-helix-' + Date.now();
+  const marker = 'e2e-' + Date.now();
+  // The action we'll be evaluating — uses a unique marker so seeded similar
+  // entries actually match via FTS without colliding with prior test data.
+  const action_summary = `Bash: deploy-script ${marker} --target=prod`;
+
+  // STEP 1: seed three past outcome:failure entries that FTS will match.
+  // Match keyword: "deploy-script <marker>" — uniquely tied to this test.
+  for (let i = 0; i < 3; i++) {
+    ch.record({
+      session_id: sid,
+      content: `[PostToolUse] Bash: deploy-script ${marker} run ${i}\nResult: Traceback at line 42`,
+      domain: 'session-action',
+      tags: ['post-tool-use', 'bash', 'outcome:failure'],
+      intensity: 0.2
+    });
+  }
+  // One past success for ratio variety (3F/4T = 0.75, above threshold).
+  ch.record({
+    session_id: sid,
+    content: `[PostToolUse] Bash: deploy-script ${marker} run-pass\nResult: ok`,
+    domain: 'session-action',
+    tags: ['post-tool-use', 'bash', 'outcome:success'],
+    intensity: 0.2
+  });
+
+  // STEP 2: simulate classify() on this action — should be OPEN (no rule).
+  // We assert this directly via the library so the test is closed-loop.
+  const baseResult = compass.classify({
+    tool_name: 'Bash',
+    tool_input: { command: `deploy-script ${marker} --target=prod` }
+  }, { has_goal: false });
+  assert.strictEqual(baseResult.classification, 'OPEN', 'base classification must be OPEN for this action');
+
+  // STEP 3: recall similar entries, then run the coupling policy.
+  const similar = ch.recall({ query: action_summary, topK: 10, include_meta: true });
+  const coupled = escalateByMemory(baseResult, similar);
+  assert.strictEqual(coupled.classification, 'PAUSE', 'memory should escalate OPEN→PAUSE given 3/4 past failures');
+  assert.strictEqual(coupled.memory_escalated, true);
+  assert.strictEqual(coupled.rule_id, 'memory:similar-failures');
+
+  // STEP 4: record the compass-fire entry with action_hash tag.
+  ch.recordCompassFire({
+    session_id: sid,
+    action_summary,
+    classification: coupled.classification,
+    rule_matched: coupled.rule_id,
+    reason: coupled.reason
+  });
+
+  // STEP 5: simulate PostToolUse for the same action after user override.
+  // PostToolUse writes its own action:<hash> tag from action_summary.
+  const hash = ch.actionHash(action_summary);
+  ch.record({
+    session_id: sid,
+    content: `[PostToolUse] ${action_summary}\nResult: deploy completed successfully`,
+    domain: 'session-action',
+    tags: ['post-tool-use', 'bash', 'outcome:success', `action:${hash}`],
+    intensity: 0.2
+  });
+
+  // STEP 6: recall by the shared action:<hash> tag — must return both
+  // endpoints. This is the chain made explicit.
+  const chain = ch.recall({ query: marker, topK: 20, tag: `action:${hash}`, include_meta: true });
+  assert.ok(chain.length >= 2, `chain must include both compass-fire + PostToolUse, got ${chain.length}`);
+  assert.ok(chain.some(h => h.tags && h.tags.includes('compass-fire')), 'chain must include compass-fire');
+  assert.ok(chain.some(h => h.tags && h.tags.includes('outcome:success')), 'chain must include outcome:success from post-override PostToolUse');
+});
+
 ch.close();
 
 console.log(`\n${pass} passed, ${fail} failed`);

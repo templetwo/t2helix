@@ -9,7 +9,8 @@ const {
   findApproval,
   consumeApproval,
   createPendingConfirmation,
-  recall
+  recall,
+  recordCompassFire
 } = require('../lib/chronicle');
 const { readStdin } = require('../lib/hook-io');
 const { escalateByMemory } = require('../lib/coupling');
@@ -74,6 +75,25 @@ async function main() {
       reason: result.reason
     });
   } catch (_) {}
+
+  // Compass → memory coupling (helix criterion #3). When the compass actually
+  // fires (PAUSE or WITNESS, never OPEN), write a chronicle entry tagged with
+  // action:<hash> so PostToolUse entries (also tagged with the same hash)
+  // close the chain. Recall by tag returns both endpoints: what the compass
+  // judged, and what actually happened next. Fire regardless of whether the
+  // approval-token override will consume it — the "compass fired here once"
+  // event is itself informative for future sessions.
+  if (result.classification !== 'OPEN') {
+    try {
+      recordCompassFire({
+        session_id,
+        action_summary,
+        classification: result.classification,
+        rule_matched: result.rule_id,
+        reason: result.reason
+      });
+    } catch (_) {}
+  }
 
   if (result.classification === 'OPEN') {
     process.stdout.write(JSON.stringify({}));

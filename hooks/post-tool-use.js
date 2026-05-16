@@ -13,7 +13,8 @@
 // goal-adjacent domain keyword, we surface a soft reminder. This is v0.0.5
 // behavior — a lightweight signal, not a hard gate.
 
-const { record, getGoal, writeCurrentSession } = require('../lib/chronicle');
+const { record, getGoal, writeCurrentSession, actionHash } = require('../lib/chronicle');
+const { summarizeAction } = require('../lib/compass');
 const { readStdin } = require('../lib/hook-io');
 const { detectOutcome } = require('../lib/outcome');
 
@@ -73,6 +74,14 @@ async function main() {
     const outcome = detectOutcome(tool_name, tool_response);
     const tags = ['post-tool-use', tool_name.toLowerCase()];
     if (outcome) tags.push(`outcome:${outcome}`);
+
+    // action:<hash> tag — pairs with the same tag on compass-fire entries so
+    // recall by tag returns both endpoints of the chain (compass judged X,
+    // then X actually happened with this outcome). Helix criterion #3 link.
+    try {
+      const hash = actionHash(summarizeAction({ tool_name, tool_input }));
+      tags.push(`action:${hash}`);
+    } catch (_) {}
 
     record({
       session_id: session_id || 'unknown',
