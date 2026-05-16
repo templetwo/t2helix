@@ -451,6 +451,131 @@ test('outcome: Bash with non-object response → null (ambiguous)', () => {
   assert.strictEqual(detectOutcome('Bash', 'some string'), null);
 });
 
+// ============================================================================
+// chronicle: recall tag filter (helix criterion #2 supporting feature)
+// ============================================================================
+
+test('recall: tag filter matches entries containing exact quoted tag token', () => {
+  const sid = 'tag-filter-' + Date.now();
+  const marker = 'tagq-' + Date.now();
+  ch.record({ session_id: sid, content: `${marker} failure case`, tags: ['outcome:failure', 'bash'] });
+  ch.record({ session_id: sid, content: `${marker} success case`, tags: ['outcome:success', 'bash'] });
+  ch.record({ session_id: sid, content: `${marker} untagged`, tags: ['bash'] });
+  const failureHits = ch.recall({ query: marker, topK: 10, tag: 'outcome:failure' });
+  assert.ok(failureHits.length >= 1, 'should match the failure entry');
+  assert.ok(failureHits.every(h => h.tags && h.tags.includes('outcome:failure')), 'every hit must carry the tag');
+  assert.ok(!failureHits.some(h => h.tags && h.tags.includes('outcome:success')), 'success entry must be excluded');
+});
+
+test('recall: tag filter is exact (outcome:fail does NOT match outcome:failure)', () => {
+  const sid = 'tag-exact-' + Date.now();
+  const marker = 'tagex-' + Date.now();
+  ch.record({ session_id: sid, content: `${marker} entry`, tags: ['outcome:failure'] });
+  const hits = ch.recall({ query: marker, topK: 10, tag: 'outcome:fail' });
+  assert.strictEqual(hits.length, 0, 'partial tag prefix should not match');
+});
+
+// ============================================================================
+// coupling: memory → compass escalation policy (helix criterion #2)
+// Pure tests — no DB. Hand the policy a base classification and a synthetic
+// entry list and assert the upgrade behavior.
+// ============================================================================
+
+const { escalateByMemory, countOutcomes, MIN_SIMILAR, FAILURE_RATIO } = require('../lib/coupling');
+
+function mkEntry(id, tags) {
+  return { id, tags };
+}
+
+test('coupling: WITNESS classification is never escalated (rule decisions stand)', () => {
+  const base = { classification: 'WITNESS', rule_id: 'rm-rf-wildcard', reason: 'hard deny' };
+  const similar = [mkEntry(1, ['outcome:failure']), mkEntry(2, ['outcome:failure']), mkEntry(3, ['outcome:failure'])];
+  const r = escalateByMemory(base, similar);
+  assert.strictEqual(r.classification, 'WITNESS');
+  assert.strictEqual(r.memory_escalated, false);
+});
+
+test('coupling: PAUSE classification is never escalated (memory cannot downgrade or skip)', () => {
+  const base = { classification: 'PAUSE', rule_id: 'credential-paste', reason: 'soft deny' };
+  const similar = [mkEntry(1, ['outcome:success']), mkEntry(2, ['outcome:success']), mkEntry(3, ['outcome:success'])];
+  const r = escalateByMemory(base, similar);
+  assert.strictEqual(r.classification, 'PAUSE');
+  assert.strictEqual(r.memory_escalated, false);
+});
+
+test('coupling: OPEN stays OPEN below MIN_SIMILAR sample size', () => {
+  const base = { classification: 'OPEN', rule_id: null, reason: null };
+  const similar = [mkEntry(1, ['outcome:failure']), mkEntry(2, ['outcome:failure'])];  // total=2 < MIN_SIMILAR=3
+  const r = escalateByMemory(base, similar);
+  assert.strictEqual(r.classification, 'OPEN');
+  assert.strictEqual(r.memory_escalated, false);
+});
+
+test('coupling: OPEN stays OPEN when failure ratio below threshold', () => {
+  const base = { classification: 'OPEN', rule_id: null, reason: null };
+  const similar = [
+    mkEntry(1, ['outcome:success']), mkEntry(2, ['outcome:success']),
+    mkEntry(3, ['outcome:success']), mkEntry(4, ['outcome:failure'])
+  ];  // 1/4 = 0.25 failures, below 0.5
+  const r = escalateByMemory(base, similar);
+  assert.strictEqual(r.classification, 'OPEN');
+  assert.strictEqual(r.memory_escalated, false);
+});
+
+test('coupling: OPEN → PAUSE when ≥50% of N≥3 outcome-tagged entries are failures', () => {
+  const base = { classification: 'OPEN', rule_id: null, reason: null };
+  const similar = [
+    mkEntry(101, ['outcome:failure']), mkEntry(102, ['outcome:failure']),
+    mkEntry(103, ['outcome:failure']), mkEntry(104, ['outcome:success'])
+  ];  // 3/4 failures, ratio 0.75 ≥ 0.5
+  const r = escalateByMemory(base, similar);
+  assert.strictEqual(r.classification, 'PAUSE');
+  assert.strictEqual(r.rule_id, 'memory:similar-failures');
+  assert.strictEqual(r.memory_escalated, true);
+  assert.ok(r.reason.includes('3/4'), 'reason should include the failure stats');
+  assert.ok(r.reason.includes('#101'), 'reason should reference matched failure entry IDs');
+});
+
+test('coupling: untagged entries are ignored in the ratio (silence is safe)', () => {
+  const base = { classification: 'OPEN', rule_id: null, reason: null };
+  const similar = [
+    mkEntry(1, ['outcome:failure']), mkEntry(2, ['outcome:failure']),
+    mkEntry(3, ['outcome:failure']),
+    // 5 untagged entries that should NOT dilute the ratio
+    mkEntry(4, ['bash']), mkEntry(5, ['bash']), mkEntry(6, ['bash']),
+    mkEntry(7, []), mkEntry(8, null)
+  ];
+  const r = escalateByMemory(base, similar);
+  assert.strictEqual(r.classification, 'PAUSE', 'untagged should not block escalation');
+  assert.ok(r.memory_stats.total === 3, 'total counts only outcome-tagged entries');
+});
+
+test('coupling: empty/null similar entries leaves classification untouched', () => {
+  const base = { classification: 'OPEN', rule_id: null, reason: null };
+  assert.strictEqual(escalateByMemory(base, []).classification, 'OPEN');
+  assert.strictEqual(escalateByMemory(base, null).classification, 'OPEN');
+  assert.strictEqual(escalateByMemory(base, undefined).classification, 'OPEN');
+});
+
+test('coupling: countOutcomes returns success/failure/total/failureEntries shape', () => {
+  const entries = [
+    mkEntry(1, ['outcome:success']),
+    mkEntry(2, ['outcome:failure']),
+    mkEntry(3, ['outcome:failure']),
+    mkEntry(4, ['some-other-tag'])
+  ];
+  const r = countOutcomes(entries);
+  assert.strictEqual(r.success, 1);
+  assert.strictEqual(r.failure, 2);
+  assert.strictEqual(r.total, 3);
+  assert.strictEqual(r.failureEntries.length, 2);
+});
+
+test('coupling: thresholds exported and have sensible MVP values', () => {
+  assert.strictEqual(MIN_SIMILAR, 3, 'MIN_SIMILAR should be 3 for MVP');
+  assert.strictEqual(FAILURE_RATIO, 0.5, 'FAILURE_RATIO should be 0.5 for MVP');
+});
+
 ch.close();
 
 console.log(`\n${pass} passed, ${fail} failed`);

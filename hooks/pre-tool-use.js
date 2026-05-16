@@ -8,9 +8,11 @@ const {
   writeCurrentSession,
   findApproval,
   consumeApproval,
-  createPendingConfirmation
+  createPendingConfirmation,
+  recall
 } = require('../lib/chronicle');
 const { readStdin } = require('../lib/hook-io');
+const { escalateByMemory } = require('../lib/coupling');
 
 async function main() {
   let input;
@@ -41,11 +43,32 @@ async function main() {
     process.exit(0);
   }
 
+  const action_summary = summarizeAction({ tool_name, tool_input });
+
+  // Memory → compass coupling (helix criterion #2). When the rules return
+  // OPEN, query recall() for similar past actions and let lib/coupling
+  // decide whether the outcome history of those actions warrants escalation
+  // to PAUSE. Failures here never block the tool — coupling failure means
+  // "rules-only verdict stands."
+  if (result.classification === 'OPEN') {
+    try {
+      const similar = recall({
+        query: action_summary,
+        topK: 10,
+        include_meta: true
+      });
+      const coupled = escalateByMemory(result, similar);
+      if (coupled && coupled.memory_escalated) {
+        result = coupled;
+      }
+    } catch (_) {}
+  }
+
   try {
     logCompass({
       session_id,
       tool_name,
-      action_summary: summarizeAction({ tool_name, tool_input }),
+      action_summary,
       classification: result.classification,
       rule_matched: result.rule_id,
       reason: result.reason
@@ -56,8 +79,6 @@ async function main() {
     process.stdout.write(JSON.stringify({}));
     process.exit(0);
   }
-
-  const action_summary = summarizeAction({ tool_name, tool_input });
 
   // PAUSE override flow: if Claude (or user) already approved this exact action
   // for this session_id, consume the approval and let the tool through.

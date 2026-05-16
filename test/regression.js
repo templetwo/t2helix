@@ -369,6 +369,23 @@ test('recall: until param excludes entries newer than the cutoff', async (client
   assert.strictEqual(r.count, 0, 'far-past until must return 0 hits');
 });
 
+test('recall: tag filter narrows to entries with the exact tag', async (client) => {
+  const marker = 'tag-filter-' + Date.now();
+  await call(client, 'record', { content: `${marker} failure`, tags: ['outcome:failure', 'bash'], domain: 'user' });
+  await call(client, 'record', { content: `${marker} success`, tags: ['outcome:success', 'bash'], domain: 'user' });
+  await call(client, 'record', { content: `${marker} untagged`, tags: ['bash'], domain: 'user' });
+  const r = await call(client, 'recall', { query: marker, topK: 10, tag: 'outcome:failure' });
+  assert.ok(r.hits.some(h => h.content.includes('failure')), 'failure entry must be returned');
+  assert.ok(!r.hits.some(h => h.tags && h.tags.includes('outcome:success')), 'success entry must be excluded');
+});
+
+test('recall: tag filter is exact (no partial-prefix match)', async (client) => {
+  const marker = 'tag-exact-' + Date.now();
+  await call(client, 'record', { content: `${marker} entry`, tags: ['outcome:failure'], domain: 'user' });
+  const r = await call(client, 'recall', { query: marker, topK: 10, tag: 'outcome:fail' });
+  assert.strictEqual(r.count, 0, 'partial tag prefix should not match');
+});
+
 test('recall: since+until creates a valid time window', async (client) => {
   const marker = 'window-test-' + Date.now();
   const before = Date.now();

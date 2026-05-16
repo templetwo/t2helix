@@ -51,6 +51,10 @@ const TOOLS = [
         until: {
           type: 'number',
           description: 'Upper bound on created_at (epoch ms). Omit for no upper bound.'
+        },
+        tag: {
+          type: 'string',
+          description: "Filter to entries whose tags array contains this exact string (e.g. 'outcome:failure', 'archived-goal'). Quoted-token match — 'outcome:fail' will NOT match 'outcome:failure'."
         }
       },
       required: ['query']
@@ -191,7 +195,8 @@ function handleToolCall(name, args) {
         min_intensity: args.min_intensity,
         include_meta: args.include_meta || false,
         since: args.since,
-        until: args.until
+        until: args.until,
+        tag: args.tag
       });
       return textContent({ count: hits.length, hits });
     }
