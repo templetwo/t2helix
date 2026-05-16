@@ -28,10 +28,11 @@ Plus an in-process MCP server exposing eight tools:
 
 | Tool | Purpose |
 |------|---------|
-| `recall` | Search the chronicle for past insights by query (FTS5 + recency-weighted). Filters: `layer` (`ground_truth`/`hypothesis`/`reflection`, single or array), `min_intensity`, `include_meta`. Hook-generated entries (`session-action`, `session-synthesis`) are excluded by default; pass `include_meta:true` to see them. |
+| `recall` | Search the chronicle for past insights by query (FTS5 + recency-weighted). Filters: `layer` (`ground_truth`/`hypothesis`/`reflection`, single or array), `min_intensity`, `include_meta`, `since`/`until` (epoch ms). Hook-generated entries (`session-action`, `session-synthesis`) are excluded by default; pass `include_meta:true` to see them. |
 | `record` | Write a new insight inline. |
 | `set_goal` | Anchor a session goal. Archives any prior goal as a `reflection`-layer insight tagged `archived-goal`. |
 | `open_thread` | Capture an unresolved question to revisit later. |
+| `resolve_thread` | Close an open thread by id with a resolution. Stamps `resolved_at` + `resolution`; thread drops out of `get_state.open_threads`. |
 | `get_state` | Read current goal + recent open threads + recent insights. |
 | `recall_compass` | Query the compass log of past PreToolUse classifications (filter by classification, matched_only, limit). |
 | `confirm_pending` | Approve a pending PAUSE confirmation by token. Single-use; the retry consumes the approval. |

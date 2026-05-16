@@ -96,11 +96,11 @@ function test(name, fn) { tests.push({ name, fn }); }
 
 // ── Protocol ──────────────────────────────────────────────────────────────────
 
-test('protocol: tools/list returns 8 tools, each with description + inputSchema', async (client) => {
+test('protocol: tools/list returns 9 tools, each with description + inputSchema', async (client) => {
   const r = await client.request('tools/list', {});
   const tools = r.result.tools;
-  assert.strictEqual(tools.length, 8, `expected 8 tools, got ${tools.length}`);
-  const expected = ['recall', 'record', 'set_goal', 'open_thread', 'get_state', 'recall_compass', 'confirm_pending', 'list_pending'];
+  assert.strictEqual(tools.length, 9, `expected 9 tools, got ${tools.length}`);
+  const expected = ['recall', 'record', 'set_goal', 'open_thread', 'resolve_thread', 'get_state', 'recall_compass', 'confirm_pending', 'list_pending'];
   const names = new Set(tools.map(t => t.name));
   for (const n of expected) {
     assert.ok(names.has(n), `tools/list missing ${n}`);
@@ -311,6 +311,72 @@ test('open_thread: question surfaces in get_state.open_threads', async (client) 
   const state = await call(client, 'get_state');
   assert.ok(state.open_threads.some(t => t.question === question),
     'open_thread question must surface in get_state');
+});
+
+// ── resolve_thread ────────────────────────────────────────────────────────────
+
+test('resolve_thread: returns ok + id for a valid open thread', async (client) => {
+  const question = 'resolvable question ' + Date.now();
+  const opened = await call(client, 'open_thread', { question, domain: 'test' });
+  const r = await call(client, 'resolve_thread', { id: opened.id, resolution: 'figured it out' });
+  assert.strictEqual(r.ok, true);
+  assert.strictEqual(r.id, opened.id);
+});
+
+test('resolve_thread: resolved thread drops from get_state.open_threads', async (client) => {
+  const question = 'will-resolve ' + Date.now();
+  const opened = await call(client, 'open_thread', { question, domain: 'test' });
+  await call(client, 'resolve_thread', { id: opened.id, resolution: 'closed' });
+  const state = await call(client, 'get_state');
+  assert.ok(!state.open_threads.some(t => t.id === opened.id),
+    'resolved thread must not appear in open_threads');
+});
+
+test('resolve_thread: rejects unknown id (JSON-RPC error)', async (client) => {
+  const r = await callRaw(client, 'resolve_thread', { id: 999999999, resolution: 'no such thread' });
+  assert.ok(r.error, 'unknown id must error');
+});
+
+test('resolve_thread: rejects empty resolution', async (client) => {
+  const opened = await call(client, 'open_thread', { question: 'empty-res-test ' + Date.now() });
+  const r = await callRaw(client, 'resolve_thread', { id: opened.id, resolution: '' });
+  assert.ok(r.error, 'empty resolution must error');
+});
+
+test('resolve_thread: double-resolve is idempotent (already_resolved flag)', async (client) => {
+  const opened = await call(client, 'open_thread', { question: 'double-resolve ' + Date.now() });
+  await call(client, 'resolve_thread', { id: opened.id, resolution: 'first' });
+  const r = await call(client, 'resolve_thread', { id: opened.id, resolution: 'second' });
+  assert.strictEqual(r.ok, true);
+  assert.strictEqual(r.already_resolved, true);
+});
+
+// ── recall time window ────────────────────────────────────────────────────────
+
+test('recall: since param excludes entries older than the cutoff', async (client) => {
+  const marker = 'since-test-' + Date.now();
+  await call(client, 'record', { content: `${marker} entry`, domain: 'user-domain' });
+  // since in the far future → must return nothing
+  const r = await call(client, 'recall', { query: marker, topK: 10, since: Date.now() + 86400000 });
+  assert.strictEqual(r.count, 0, 'far-future since must return 0 hits');
+});
+
+test('recall: until param excludes entries newer than the cutoff', async (client) => {
+  const marker = 'until-test-' + Date.now();
+  await call(client, 'record', { content: `${marker} entry`, domain: 'user-domain' });
+  // until in the far past → must return nothing
+  const r = await call(client, 'recall', { query: marker, topK: 10, until: 1 });
+  assert.strictEqual(r.count, 0, 'far-past until must return 0 hits');
+});
+
+test('recall: since+until creates a valid time window', async (client) => {
+  const marker = 'window-test-' + Date.now();
+  const before = Date.now();
+  await call(client, 'record', { content: `${marker} in-window`, domain: 'user-domain' });
+  const after = Date.now() + 1000;
+  // Window around the write should include it
+  const r = await call(client, 'recall', { query: marker, topK: 10, since: before - 1000, until: after });
+  assert.ok(r.hits.some(h => h.content.includes('in-window')), 'entry in window must be returned');
 });
 
 // ── get_state ─────────────────────────────────────────────────────────────────

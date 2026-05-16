@@ -43,6 +43,14 @@ const TOOLS = [
           type: 'boolean',
           default: false,
           description: 'When true, includes session-action (PostToolUse) and session-synthesis (Stop) hook entries. Default false to keep recall focused on curated content.'
+        },
+        since: {
+          type: 'number',
+          description: 'Lower bound on created_at (epoch ms). Omit for no lower bound. For a 7-day window: Date.now() - 7*86400000.'
+        },
+        until: {
+          type: 'number',
+          description: 'Upper bound on created_at (epoch ms). Omit for no upper bound.'
         }
       },
       required: ['query']
@@ -87,6 +95,18 @@ const TOOLS = [
         context: { type: 'string' }
       },
       required: ['question']
+    }
+  },
+  {
+    name: 'resolve_thread',
+    description: 'Close an open thread by id with a resolution. The thread stops surfacing in get_state.open_threads and gets stamped with resolved_at + resolution text.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        id: { type: 'number', description: 'Thread id (from open_thread or get_state.open_threads).' },
+        resolution: { type: 'string', description: 'How the question was resolved — facts, decision, or pointer to the entry that answered it.' }
+      },
+      required: ['id', 'resolution']
     }
   },
   {
@@ -169,7 +189,9 @@ function handleToolCall(name, args) {
         topK: args.topK || 5,
         layer: args.layer,
         min_intensity: args.min_intensity,
-        include_meta: args.include_meta || false
+        include_meta: args.include_meta || false,
+        since: args.since,
+        until: args.until
       });
       return textContent({ count: hits.length, hits });
     }
@@ -196,6 +218,10 @@ function handleToolCall(name, args) {
     case 'open_thread': {
       const r = ch.openThread({ question: args.question, domain: args.domain, context: args.context });
       return textContent({ ok: true, id: r.id });
+    }
+    case 'resolve_thread': {
+      const r = ch.resolveThread({ id: args.id, resolution: args.resolution });
+      return textContent(r);
     }
     case 'get_state': {
       return textContent(ch.getState(sid));
