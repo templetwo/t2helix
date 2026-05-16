@@ -198,6 +198,60 @@ test('recall: topK caps result count', async (client) => {
   assert.strictEqual(r.hits.length, r.count);
 });
 
+test('recall: excludes session-action domain by default', async (client) => {
+  const marker = 'meta-action-' + Date.now();
+  await call(client, 'record', { content: `${marker} curated insight`, domain: 'user-domain' });
+  await call(client, 'record', { content: `${marker} action echo`, domain: 'session-action', intensity: 0.2 });
+  const r = await call(client, 'recall', { query: marker, topK: 10 });
+  assert.ok(r.hits.some(h => h.content.includes('curated insight')), 'curated entry must be visible');
+  assert.ok(!r.hits.some(h => h.domain === 'session-action'), 'session-action must be excluded by default');
+});
+
+test('recall: excludes session-synthesis domain by default', async (client) => {
+  const marker = 'meta-synth-' + Date.now();
+  await call(client, 'record', { content: `${marker} curated`, domain: 'user-domain' });
+  await call(client, 'record', { content: `${marker} synthesis snapshot`, domain: 'session-synthesis', intensity: 0.7, layer: 'reflection' });
+  const r = await call(client, 'recall', { query: marker, topK: 10 });
+  assert.ok(!r.hits.some(h => h.domain === 'session-synthesis'), 'session-synthesis must be excluded by default');
+});
+
+test('recall: include_meta=true surfaces hook entries', async (client) => {
+  const marker = 'meta-incl-' + Date.now();
+  await call(client, 'record', { content: `${marker} action echo`, domain: 'session-action', intensity: 0.2 });
+  const r = await call(client, 'recall', { query: marker, topK: 10, include_meta: true });
+  assert.ok(r.hits.some(h => h.domain === 'session-action'), 'session-action must be visible when include_meta=true');
+});
+
+test('recall: layer filter narrows to ground_truth', async (client) => {
+  const marker = 'layer-filter-' + Date.now();
+  await call(client, 'record', { content: `${marker} gt-fact`, layer: 'ground_truth' });
+  await call(client, 'record', { content: `${marker} hy-guess`, layer: 'hypothesis' });
+  await call(client, 'record', { content: `${marker} rf-note`, layer: 'reflection' });
+  const r = await call(client, 'recall', { query: marker, topK: 10, layer: 'ground_truth' });
+  assert.ok(r.hits.length >= 1, 'should have at least the ground_truth hit');
+  assert.ok(r.hits.every(h => h.layer === 'ground_truth'), 'layer filter must exclude non-ground_truth');
+});
+
+test('recall: layer accepts array of layers', async (client) => {
+  const marker = 'layer-arr-' + Date.now();
+  await call(client, 'record', { content: `${marker} gt`, layer: 'ground_truth' });
+  await call(client, 'record', { content: `${marker} hy`, layer: 'hypothesis' });
+  await call(client, 'record', { content: `${marker} rf`, layer: 'reflection' });
+  const r = await call(client, 'recall', { query: marker, topK: 10, layer: ['ground_truth', 'hypothesis'] });
+  const layers = new Set(r.hits.map(h => h.layer));
+  assert.ok(layers.has('ground_truth') && layers.has('hypothesis'), 'both gt+hy must be present');
+  assert.ok(!layers.has('reflection'), 'reflection must be excluded when not in array');
+});
+
+test('recall: min_intensity floor excludes low-intensity entries', async (client) => {
+  const marker = 'minint-' + Date.now();
+  await call(client, 'record', { content: `${marker} high-intensity`, intensity: 0.8, domain: 'user-domain' });
+  await call(client, 'record', { content: `${marker} low-intensity`, intensity: 0.2, domain: 'user-domain' });
+  const r = await call(client, 'recall', { query: marker, topK: 10, min_intensity: 0.5 });
+  assert.ok(r.hits.some(h => h.content.includes('high-intensity')), 'high-intensity hit must be visible');
+  assert.ok(!r.hits.some(h => h.content.includes('low-intensity')), 'low-intensity hit must be excluded');
+});
+
 test('recall: no-match query returns empty (FTS5 0-row path)', async (client) => {
   // v0.0.5 contract: when the FTS5 query parses cleanly but matches nothing,
   // recall returns 0 hits. The "fall back to most recent" path in

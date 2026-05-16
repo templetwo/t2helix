@@ -28,7 +28,7 @@ Plus an in-process MCP server exposing eight tools:
 
 | Tool | Purpose |
 |------|---------|
-| `recall` | Search the chronicle for past insights by query (FTS5 + recency-weighted). |
+| `recall` | Search the chronicle for past insights by query (FTS5 + recency-weighted). Filters: `layer` (`ground_truth`/`hypothesis`/`reflection`, single or array), `min_intensity`, `include_meta`. Hook-generated entries (`session-action`, `session-synthesis`) are excluded by default; pass `include_meta:true` to see them. |
 | `record` | Write a new insight inline. |
 | `set_goal` | Anchor a session goal. Archives any prior goal as a `reflection`-layer insight tagged `archived-goal`. |
 | `open_thread` | Capture an unresolved question to revisit later. |

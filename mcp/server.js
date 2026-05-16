@@ -20,12 +20,30 @@ const PORT = parseInt(argValue('--port') || '3742', 10);
 const TOOLS = [
   {
     name: 'recall',
-    description: 'Search the local T2Helix chronicle for past insights related to a query. Use before tackling non-trivial coding work.',
+    description: 'Search the local T2Helix chronicle for past insights related to a query. Use before tackling non-trivial coding work. By default excludes hook-generated meta entries (PostToolUse echoes, Stop syntheses) so the surface is curated content first. Pass layer=\'ground_truth\' for confirmed-fact queries; include_meta=true to see hook entries.',
     inputSchema: {
       type: 'object',
       properties: {
         query: { type: 'string', description: 'Search terms — short, content-heavy phrases work best.' },
-        topK: { type: 'number', default: 5 }
+        topK: { type: 'number', default: 5 },
+        layer: {
+          oneOf: [
+            { type: 'string', enum: ['hypothesis', 'ground_truth', 'reflection'] },
+            { type: 'array', items: { type: 'string', enum: ['hypothesis', 'ground_truth', 'reflection'] } }
+          ],
+          description: "Filter by layer. 'ground_truth' = confirmed facts; 'hypothesis' = in-progress; 'reflection' = syntheses + archived goals. Single string or array."
+        },
+        min_intensity: {
+          type: 'number',
+          minimum: 0,
+          maximum: 1,
+          description: 'Exclude entries below this intensity. Useful when querying for high-confidence findings only.'
+        },
+        include_meta: {
+          type: 'boolean',
+          default: false,
+          description: 'When true, includes session-action (PostToolUse) and session-synthesis (Stop) hook entries. Default false to keep recall focused on curated content.'
+        }
       },
       required: ['query']
     }
@@ -146,7 +164,13 @@ function handleToolCall(name, args) {
   const sid = sessionId(args);
   switch (name) {
     case 'recall': {
-      const hits = ch.recall({ query: args.query, topK: args.topK || 5 });
+      const hits = ch.recall({
+        query: args.query,
+        topK: args.topK || 5,
+        layer: args.layer,
+        min_intensity: args.min_intensity,
+        include_meta: args.include_meta || false
+      });
       return textContent({ count: hits.length, hits });
     }
     case 'record': {
