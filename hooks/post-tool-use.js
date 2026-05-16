@@ -15,6 +15,7 @@
 
 const { record, getGoal, writeCurrentSession } = require('../lib/chronicle');
 const { readStdin } = require('../lib/hook-io');
+const { detectOutcome } = require('../lib/outcome');
 
 const SIGNIFICANT_TOOLS = new Set(['Bash', 'Edit', 'Write', 'MultiEdit']);
 
@@ -65,11 +66,19 @@ async function main() {
       ? `[PostToolUse] ${action}\nGoal: ${goal.goal}\nResult: ${resultSnippet}`
       : `[PostToolUse] ${action}\nResult: ${resultSnippet}`;
 
+    // Outcome detection — the substrate the helix coupling reads.
+    // Heuristic and explicit; ambiguous responses produce no tag (silent is
+    // safer than mislabeled — the compass-side coupling reads only tagged
+    // entries, so missing labels just mean "no signal," not "false signal").
+    const outcome = detectOutcome(tool_name, tool_response);
+    const tags = ['post-tool-use', tool_name.toLowerCase()];
+    if (outcome) tags.push(`outcome:${outcome}`);
+
     record({
       session_id: session_id || 'unknown',
       content,
       domain: 'session-action',
-      tags: ['post-tool-use', tool_name.toLowerCase()],
+      tags,
       intensity: 0.2,
       layer: 'hypothesis'
     });

@@ -376,6 +376,81 @@ test('hook-io: readStdin is exported and is a function', () => {
   assert.strictEqual(typeof readStdin, 'function');
 });
 
+// ============================================================================
+// outcome detection (helix substrate — criterion #1)
+// PostToolUse uses these tags to mark whether the action succeeded or failed;
+// the memory→compass coupling reads them when scoring future similar actions.
+// ============================================================================
+
+const { detectOutcome } = require('../lib/outcome');
+
+test('outcome: Bash with clean stdout and empty stderr → success', () => {
+  const r = detectOutcome('Bash', { stdout: '10 passed in 0.45s', stderr: '', interrupted: false });
+  assert.strictEqual(r, 'success');
+});
+
+test('outcome: Bash with pytest FAILED in stdout → failure', () => {
+  const r = detectOutcome('Bash', { stdout: 'test_foo FAILED\n1 passed, 1 failed', stderr: '', interrupted: false });
+  assert.strictEqual(r, 'failure');
+});
+
+test('outcome: Bash with Python Traceback in stdout → failure', () => {
+  const r = detectOutcome('Bash', {
+    stdout: 'Traceback (most recent call last):\n  File "x.py", line 1, in <module>\n    raise ValueError()',
+    stderr: '',
+    interrupted: false
+  });
+  assert.strictEqual(r, 'failure');
+});
+
+test('outcome: Bash with "fatal:" in stderr → failure (git error shape)', () => {
+  const r = detectOutcome('Bash', { stdout: '', stderr: 'fatal: not a git repository', interrupted: false });
+  assert.strictEqual(r, 'failure');
+});
+
+test('outcome: Bash with deprecation warning in stderr → success (warning ≠ error)', () => {
+  const r = detectOutcome('Bash', {
+    stdout: 'installed 3 packages',
+    stderr: 'npm warn deprecated foo@1.0.0',
+    interrupted: false
+  });
+  assert.strictEqual(r, 'success');
+});
+
+test('outcome: any tool with interrupted=true → failure (universal signal)', () => {
+  assert.strictEqual(detectOutcome('Bash', { stdout: '', stderr: '', interrupted: true }), 'failure');
+  assert.strictEqual(detectOutcome('Edit', { interrupted: true }), 'failure');
+});
+
+test('outcome: Edit with object response → success', () => {
+  const r = detectOutcome('Edit', { filePath: '/tmp/x.js', oldString: 'a', newString: 'b' });
+  assert.strictEqual(r, 'success');
+});
+
+test('outcome: Write with object response → success', () => {
+  const r = detectOutcome('Write', { filePath: '/tmp/x.js' });
+  assert.strictEqual(r, 'success');
+});
+
+test('outcome: Edit with "Error: ..." string response → failure (defensive)', () => {
+  const r = detectOutcome('Edit', 'Error: file not found');
+  assert.strictEqual(r, 'failure');
+});
+
+test('outcome: unknown tool → null (do not tag what we cannot judge)', () => {
+  assert.strictEqual(detectOutcome('NotebookEdit', { foo: 'bar' }), null);
+  assert.strictEqual(detectOutcome('Read', { content: '...' }), null);
+});
+
+test('outcome: missing tool_response → null', () => {
+  assert.strictEqual(detectOutcome('Bash', null), null);
+  assert.strictEqual(detectOutcome('Bash', undefined), null);
+});
+
+test('outcome: Bash with non-object response → null (ambiguous)', () => {
+  assert.strictEqual(detectOutcome('Bash', 'some string'), null);
+});
+
 ch.close();
 
 console.log(`\n${pass} passed, ${fail} failed`);
