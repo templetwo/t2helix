@@ -40,7 +40,7 @@
       "id": "deploy-prod",
       "classification": "WITNESS",
       "tool": "Bash",
-      "pattern": "(?i)\\b(?:kubectl|terraform|helm|aws|gcloud)\\b(?![^|;&]*\\b(?:get|list|ls|describe|logs|top|explain|view|show|status|cat|history|version|cluster-info|api-resources|api-versions|get-contexts|current-context|whoami)\\b)(?=[^|;&]*\\b(?:apply|destroy|delete|create|deploy|replace|patch|scale|rollout|install|upgrade|uninstall|terminate|update|put|remove|rollback|drain|cordon|sync|edit|set|annotate|label|restart|expose|taint|cp|mv|rm)\\b)[^|;&]*\\b(?:prod|production)\\b",
+      "pattern": "(?i)\\b(?:kubectl|terraform|helm|aws|gcloud)\\b(?![^|;&\\n\\r]*\\b(?:get|list|ls|describe|logs|top|explain|view|show|status|cat|history|version|cluster-info|api-resources|api-versions|get-contexts|current-context|whoami)\\b(?=\\s|$))(?=[^|;&\\n\\r]*\\b(?:apply|destroy|delete|create|deploy|replace|patch|scale|rollout|install|upgrade|uninstall|terminate|update|put|remove|rollback|drain|cordon|sync|edit|set|annotate|label|restart|expose|taint|cp|mv|rm|run|start|stop|import|invoke|unlock)\\b)[^|;&\\n\\r]*\\b(?:prod|production)\\b",
       "reason": "Production-mutating command detected (apply/edit/delete/destroy/etc. targeting prod). Confirm change is reviewed, tested, and intentional. Read-only inspection commands (get/list/describe/logs/...) are not gated."
     },
     {

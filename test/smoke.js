@@ -199,6 +199,10 @@ test('compass: deploy-prod gates mutating prod ops but not read-only inspection'
   assert.strictEqual(C('kubectl edit deployment app -n production'), 'WITNESS', 'kubectl edit gated');
   assert.strictEqual(C('aws s3 cp ./build s3://prod-bucket/'), 'WITNESS', 'aws s3 cp to prod gated');
   assert.strictEqual(C('terraform destroy -target prod'), 'WITNESS', 'terraform destroy prod gated');
+  assert.strictEqual(C('kubectl run nginx --image=x -n prod'), 'WITNESS', 'kubectl run gated');
+  // Relay-review bypasses (newline hide + read-only-substring resource name) must still gate.
+  assert.strictEqual(C('kubectl delete namespace prod\nkubectl get pods'), 'WITNESS', 'multiline cannot hide a mutation behind a later read-only line');
+  assert.strictEqual(C('kubectl delete service get-prod -n prod'), 'WITNESS', 'a resource named get-prod cannot shield delete');
 });
 
 test('compass: previously-untested rule variants classify correctly', () => {

@@ -38,6 +38,11 @@ sweep of robustness/safety hardening surfaced by a full readiness audit.
   coercion) and `-32602` on missing required fields.
 - FTS5 `AFTER DELETE` / `AFTER UPDATE` triggers (additive; future-proofs the
   index against any later redaction/retention path).
+- `deploy-prod` rule hardened after independent (Grok + Antigravity) review:
+  command segments are newline-bounded (a multi-line command can no longer hide
+  a mutation behind a read-only verb on another line), the mutating-verb set was
+  widened (`run`/`start`/`stop`/`import`/`edit`/`cp`/…), and read-only verbs must
+  be standalone words (a resource named `get-prod` no longer shields a `delete`).
 - **Hooks integration test suite** (`npm run integration`) — spawns the real
   PreToolUse/PostToolUse scripts and asserts the shipped wiring: OPEN/WITNESS/
   PAUSE payloads, the full PAUSE override loop, fail-open on adversarial input,
@@ -61,6 +66,8 @@ Low-severity items from the audit, recorded for a later pass:
   results don't set `isError`.
 - `recall` declares `query` required but has a reachable no-query listing mode.
 - No concurrency test for parallel hook writes (default `busy_timeout` absorbs it).
+- Compass rules match the literal command string, so shell **aliases** (`k=kubectl`)
+  and runtime expansions are not resolved — inherent to a regex gate, not a regression.
 
 ## [0.0.6] and earlier
 See git history. 0.0.x established the five hooks, the nine-tool MCP server, the
