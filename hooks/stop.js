@@ -76,4 +76,8 @@ async function main() {
   process.exit(0);
 }
 
-main();
+main().catch(() => {
+  // Last-resort fail-open: an unexpected throw must never break the host.
+  try { process.stdout.write(JSON.stringify({})); } catch (_) {}
+  process.exit(0);
+});

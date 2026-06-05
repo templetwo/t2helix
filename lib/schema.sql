@@ -25,6 +25,22 @@ CREATE TRIGGER IF NOT EXISTS insights_ai AFTER INSERT ON insights BEGIN
   VALUES (new.id, new.content, new.domain, new.tags);
 END;
 
+-- External-content FTS5 stays consistent only if delete/update mirror into the
+-- index. No row is currently ever updated or deleted, so these are purely
+-- additive today — but they remove the silent-desync landmine for the first
+-- future redaction/retention/prune path. Canonical SQLite external-content trio.
+CREATE TRIGGER IF NOT EXISTS insights_ad AFTER DELETE ON insights BEGIN
+  INSERT INTO insights_fts(insights_fts, rowid, content, domain, tags)
+  VALUES ('delete', old.id, old.content, old.domain, old.tags);
+END;
+
+CREATE TRIGGER IF NOT EXISTS insights_au AFTER UPDATE ON insights BEGIN
+  INSERT INTO insights_fts(insights_fts, rowid, content, domain, tags)
+  VALUES ('delete', old.id, old.content, old.domain, old.tags);
+  INSERT INTO insights_fts(rowid, content, domain, tags)
+  VALUES (new.id, new.content, new.domain, new.tags);
+END;
+
 CREATE TABLE IF NOT EXISTS threads (
   id INTEGER PRIMARY KEY,
   question TEXT NOT NULL,

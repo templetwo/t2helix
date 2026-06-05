@@ -478,6 +478,31 @@ test('confirm_pending: rejects double-approval', async (client) => {
   assert.strictEqual(second.ok, false, 'second approval must fail');
 });
 
+// ── boundary coercion + validation (audit fix F) ───────────────────────────────
+
+test('coercion: recall topK=0 is honored, not silently defaulted to 5', async (client) => {
+  await call(client, 'record', { content: 'zzcoerce probe alpha', domain: 'coerce-test' });
+  await call(client, 'record', { content: 'zzcoerce probe beta', domain: 'coerce-test' });
+  const r = await call(client, 'recall', { query: 'zzcoerce probe', topK: 0 });
+  assert.strictEqual(r.count, 0, 'topK:0 must return zero hits, not the default 5');
+});
+
+test('coercion: numeric-string min_intensity is coerced, not silently dropped', async (client) => {
+  await call(client, 'record', { content: 'zzintensity hi marker', domain: 'coerce-int', intensity: 0.9 });
+  await call(client, 'record', { content: 'zzintensity lo marker', domain: 'coerce-int', intensity: 0.1 });
+  const r = await call(client, 'recall', { query: 'zzintensity', min_intensity: '0.5' });
+  assert.ok(r.hits.length >= 1, 'at least the high-intensity entry returns');
+  assert.ok(r.hits.every(h => h.intensity >= 0.5), 'string "0.5" actually filters (not dropped)');
+  assert.ok(r.hits.some(h => /hi marker/.test(h.content)), 'high-intensity entry survives');
+});
+
+test('validation: missing required field returns -32602 InvalidParams', async (client) => {
+  const r = await callRaw(client, 'record', { domain: 'no-content' });
+  assert.ok(r.error, 'missing required content must error');
+  assert.strictEqual(r.error.code, -32602, `expected -32602 InvalidParams, got ${r.error.code}`);
+  assert.ok(/content/.test(r.error.message), 'error message names the missing field');
+});
+
 // ── Runner ────────────────────────────────────────────────────────────────────
 
 (async () => {

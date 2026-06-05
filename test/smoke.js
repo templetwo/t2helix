@@ -132,6 +132,82 @@ test('chronicle: getState returns goal + threads + insights', () => {
   assert.ok(s.recent_insights.some(i => i.content === 'state-test insight'));
 });
 
+test('chronicle: getState.recent_insights excludes META_DOMAINS (recall parity)', () => {
+  const sid = 'test-session-meta-filter';
+  ch.record({ session_id: sid, content: 'curated visible insight', domain: 'meta-filter-test' });
+  ch.record({ session_id: sid, content: 'hook noise action entry', domain: 'session-action' });
+  ch.record({ session_id: sid, content: 'hook noise synthesis entry', domain: 'session-synthesis' });
+  const s = ch.getState(sid);
+  assert.ok(s.recent_insights.some(i => i.content === 'curated visible insight'), 'curated insight should surface');
+  assert.ok(!s.recent_insights.some(i => i.content === 'hook noise action entry'), 'session-action must be filtered from getState');
+  assert.ok(!s.recent_insights.some(i => i.content === 'hook noise synthesis entry'), 'session-synthesis must be filtered from getState');
+});
+
+// ── audit fixes: FTS retrieval (A), atomic approval (E), compass rules (H) ───
+
+test('recall: command-shaped query ranks by FTS similarity, not recency (criterion-2)', () => {
+  const sid = 'fts-similarity';
+  // 3 OLDER similar failures, then 5 NEWER unrelated successes.
+  for (let i = 0; i < 3; i++) {
+    ch.record({ session_id: sid, content: `[PostToolUse] Bash: git push origin feature-${i} --force`, domain: 'session-action', tags: ['outcome:failure'] });
+  }
+  for (let i = 0; i < 5; i++) {
+    ch.record({ session_id: sid, content: `[PostToolUse] Bash: npm install left-pad-${i}`, domain: 'session-action', tags: ['outcome:success'] });
+  }
+  const hits = ch.recall({ query: 'Bash: git push origin main', topK: 10, include_meta: true });
+  const gitHits = hits.filter(h => /git push origin feature/.test(h.content));
+  assert.ok(gitHits.length >= 3, `expected the 3 similar git-push entries to surface, got ${gitHits.length}`);
+  const firstGit = hits.findIndex(h => /git push origin feature/.test(h.content));
+  const firstNpm = hits.findIndex(h => /npm install left-pad/.test(h.content));
+  assert.ok(firstNpm === -1 || firstGit < firstNpm,
+    'similar git-push ranks above newer unrelated npm (real FTS, not the recency fallback)');
+});
+
+test('recall: FTS-operator-laden query does not throw into the recency fallback', () => {
+  ch.record({ session_id: 'fts-noerror', content: 'alpha bravo charlie-fts-probe', domain: 'fts-test' });
+  const hits = ch.recall({ query: 'Bash: do-thing --flag (group) charlie-fts-probe', topK: 5 });
+  assert.ok(hits.some(h => /charlie-fts-probe/.test(h.content)),
+    'colon/hyphen/paren tokens are quoted as literals and still match real content');
+});
+
+test('recall: all-punctuation query returns a recency list rather than crashing', () => {
+  ch.record({ session_id: 'fts-punct', content: 'punctuation fallback probe', domain: 'fts-test' });
+  const hits = ch.recall({ query: '--- ::: ((( ', topK: 5 });
+  assert.ok(Array.isArray(hits), 'a no-searchable-token query returns a list');
+});
+
+test('consumeApproval: atomic single-use — a second consume returns false (no double-spend)', () => {
+  const sid = 'consume-atomic';
+  const summary = 'Bash: echo api_key=secret';
+  const { token } = ch.createPendingConfirmation({ session_id: sid, action_summary: summary });
+  ch.approveConfirmation({ token });
+  const approval = ch.findApproval({ session_id: sid, action_summary: summary });
+  assert.ok(approval, 'approval found after approve');
+  assert.strictEqual(ch.consumeApproval(approval.id), true, 'first consume claims the token');
+  assert.strictEqual(ch.consumeApproval(approval.id), false, 'second consume is rejected');
+});
+
+test('compass: deploy-prod gates mutating prod ops but not read-only inspection', () => {
+  const C = cmd => compass.classify({ tool_name: 'Bash', tool_input: { command: cmd } }).classification;
+  // Read-only must pass — including the "deploy" resource shorthand that naively collides.
+  assert.strictEqual(C('kubectl get pods -n production'), 'OPEN', 'read-only kubectl get not gated');
+  assert.strictEqual(C('kubectl get deploy -n production'), 'OPEN', 'kubectl get deploy (resource) not gated');
+  assert.strictEqual(C('kubectl logs -f deploy/app -n production'), 'OPEN', 'kubectl logs not gated');
+  assert.strictEqual(C('aws s3 ls s3://prod-logs'), 'OPEN', 'read-only aws s3 ls not gated');
+  // Mutating must gate — including verbs missed by a naive allowlist.
+  assert.strictEqual(C('kubectl apply -f deploy.yaml -n production'), 'WITNESS', 'kubectl apply to prod gated');
+  assert.strictEqual(C('kubectl edit deployment app -n production'), 'WITNESS', 'kubectl edit gated');
+  assert.strictEqual(C('aws s3 cp ./build s3://prod-bucket/'), 'WITNESS', 'aws s3 cp to prod gated');
+  assert.strictEqual(C('terraform destroy -target prod'), 'WITNESS', 'terraform destroy prod gated');
+});
+
+test('compass: previously-untested rule variants classify correctly', () => {
+  const C = cmd => compass.classify({ tool_name: 'Bash', tool_input: { command: cmd } });
+  assert.strictEqual(C('git reset --hard HEAD~3').rule_id, 'git-reset-hard', 'git reset --hard');
+  assert.strictEqual(C('git push -f origin main').rule_id, 'git-push-force', 'git push -f short form');
+  assert.strictEqual(C('export AWS_SECRET_ACCESS_KEY=AKIAEXAMPLE').classification, 'PAUSE', 'aws secret env var');
+});
+
 // ============================================================================
 // Phase 1: session-state file (hooks → MCP server unified signature)
 // ============================================================================
@@ -703,7 +779,13 @@ test('e2e helix loop: past failures → escalation → compass-fire → outcome 
   assert.strictEqual(baseResult.classification, 'OPEN', 'base classification must be OPEN for this action');
 
   // STEP 3: recall similar entries, then run the coupling policy.
-  const similar = ch.recall({ query: action_summary, topK: 10, include_meta: true });
+  // Query by the unique marker so this end-to-end test deterministically sees
+  // only its own seeded entries (3F/1S) regardless of other tests' chronicle
+  // writes in the shared DB. (Before the FTS-sanitizer fix this query threw and
+  // rode the recency fallback, which happened to mask shared-DB interference;
+  // the realistic action_summary→FTS retrieval path is now covered by the
+  // dedicated 'ranks by FTS similarity' test above.)
+  const similar = ch.recall({ query: marker, topK: 10, include_meta: true });
   const coupled = escalateByMemory(baseResult, similar);
   assert.strictEqual(coupled.classification, 'PAUSE', 'memory should escalate OPEN→PAUSE given 3/4 past failures');
   assert.strictEqual(coupled.memory_escalated, true);

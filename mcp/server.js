@@ -184,18 +184,45 @@ function sessionId(args) {
     || 'mcp-session';
 }
 
+// Coerce a numeric-or-numeric-string arg to a finite number, else undefined.
+// Fixes two boundary bugs: `|| default` clobbered an explicit 0, and JSON
+// tooling that stringifies numbers ("0.8") silently dropped typeof-number
+// filters in the data layer. undefined falls through to the documented default.
+function num(v) {
+  if (v === undefined || v === null || v === '') return undefined;
+  const n = Number(v);
+  return Number.isFinite(n) ? n : undefined;
+}
+
+// Minimal boundary validation: enforce each tool's declared `required` fields
+// so a missing arg returns a structured InvalidParams (-32602) instead of a
+// silent default / empty result that's hard to diagnose in a trusted memory layer.
+function validateRequired(name, args) {
+  const tool = TOOLS.find(t => t.name === name);
+  const required = tool && tool.inputSchema && tool.inputSchema.required;
+  if (!required) return;
+  for (const field of required) {
+    if (args[field] === undefined || args[field] === null) {
+      const e = new Error(`invalid params: missing required field '${field}' for ${name}`);
+      e.code = -32602;
+      throw e;
+    }
+  }
+}
+
 function handleToolCall(name, args) {
   const sid = sessionId(args);
+  validateRequired(name, args);
   switch (name) {
     case 'recall': {
       const hits = ch.recall({
         query: args.query,
-        topK: args.topK || 5,
+        topK: num(args.topK) ?? 5,
         layer: args.layer,
-        min_intensity: args.min_intensity,
+        min_intensity: num(args.min_intensity),
         include_meta: args.include_meta || false,
-        since: args.since,
-        until: args.until,
+        since: num(args.since),
+        until: num(args.until),
         tag: args.tag
       });
       return textContent({ count: hits.length, hits });
@@ -206,7 +233,7 @@ function handleToolCall(name, args) {
         content: args.content,
         domain: args.domain,
         tags: args.tags,
-        intensity: args.intensity,
+        intensity: num(args.intensity),
         layer: args.layer
       });
       return textContent({ ok: true, id: r.id });
@@ -233,7 +260,7 @@ function handleToolCall(name, args) {
     }
     case 'recall_compass': {
       const entries = ch.getCompassHistory({
-        limit: args.limit || 20,
+        limit: num(args.limit) ?? 20,
         classification: args.classification,
         matched_only: args.matched_only
       });
@@ -246,7 +273,7 @@ function handleToolCall(name, args) {
     case 'list_pending': {
       const entries = ch.listPendingConfirmations({
         session_id: args.session_id,
-        limit: args.limit || 20
+        limit: num(args.limit) ?? 20
       });
       return textContent({ count: entries.length, entries });
     }
@@ -278,7 +305,10 @@ function handleMessage(msg) {
     if (method === 'ping') return ok(id, {});
     return err(id, -32601, `method not found: ${method}`);
   } catch (e) {
-    return err(id, -32000, e.message || String(e));
+    // Honor a JSON-RPC code set on the error (e.g. -32602 from validateRequired);
+    // otherwise surface a generic server error.
+    const code = Number.isInteger(e.code) ? e.code : -32000;
+    return err(id, code, e.message || String(e));
   }
 }
 

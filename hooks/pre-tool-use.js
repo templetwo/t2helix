@@ -37,8 +37,15 @@ async function main() {
 
   let result;
   try {
-    const goal = session_id ? getGoal(session_id) : null;
-    result = classify({ tool_name, tool_input }, { has_goal: !!goal });
+    // Resolve has_goal best-effort. classify() itself reads only the rules file
+    // (no DB), so a broken/missing native binding must NOT disable rules-based
+    // gating — the headline safety feature (deny rm -rf / force-push / drop
+    // table) survives a DB outage; only the memory-coupling escalation degrades.
+    let has_goal = false;
+    try {
+      has_goal = session_id ? !!getGoal(session_id) : false;
+    } catch (_) { /* DB unavailable — gate on rules alone */ }
+    result = classify({ tool_name, tool_input }, { has_goal });
   } catch (e) {
     process.stdout.write(JSON.stringify({ systemMessage: `t2helix compass error: ${e.message}` }));
     process.exit(0);
@@ -74,7 +81,9 @@ async function main() {
       rule_matched: result.rule_id,
       reason: result.reason
     });
-  } catch (_) {}
+  } catch (e) {
+    process.stderr.write(`[t2helix] logCompass dropped: ${e.message}\n`);
+  }
 
   // Compass → memory coupling (helix criterion #3). When the compass actually
   // fires (PAUSE or WITNESS, never OPEN), write a chronicle entry tagged with
@@ -92,7 +101,11 @@ async function main() {
         rule_matched: result.rule_id,
         reason: result.reason
       });
-    } catch (_) {}
+    } catch (e) {
+      // Fail-open, but surface a dropped chain-anchor write so a half-chain
+      // (compass-fire with no paired PostToolUse outcome) isn't invisible.
+      process.stderr.write(`[t2helix] recordCompassFire dropped: ${e.message}\n`);
+    }
   }
 
   if (result.classification === 'OPEN') {
@@ -105,8 +118,10 @@ async function main() {
   if (result.classification === 'PAUSE' && session_id) {
     try {
       const approval = findApproval({ session_id, action_summary });
-      if (approval) {
-        consumeApproval(approval.id);
+      // consumeApproval is an atomic compare-and-swap: it returns false if a
+      // racing process already claimed this single-use token, in which case we
+      // fall through to deny rather than double-spend the approval.
+      if (approval && consumeApproval(approval.id)) {
         // Re-log as OPEN with a marker so the compass history reflects what happened.
         try {
           logCompass({
@@ -150,4 +165,8 @@ async function main() {
   process.exit(0);
 }
 
-main();
+main().catch(() => {
+  // Last-resort fail-open: an unexpected throw must never break the host.
+  try { process.stdout.write(JSON.stringify({})); } catch (_) {}
+  process.exit(0);
+});

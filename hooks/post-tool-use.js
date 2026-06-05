@@ -91,12 +91,19 @@ async function main() {
       intensity: 0.2,
       layer: 'hypothesis'
     });
-  } catch (_) {
-    // Never block the agent
+  } catch (e) {
+    // Never block the agent — but make a dropped chronicle write observable on
+    // stderr rather than silently breaking action:<hash> chain integrity (a
+    // compass-fire with no paired outcome leaves a misleading half-chain).
+    process.stderr.write(`[t2helix] post-tool-use record dropped: ${e.message}\n`);
   }
 
   process.stdout.write(JSON.stringify({}));
   process.exit(0);
 }
 
-main();
+main().catch(() => {
+  // Last-resort fail-open: an unexpected throw must never break the host.
+  try { process.stdout.write(JSON.stringify({})); } catch (_) {}
+  process.exit(0);
+});
