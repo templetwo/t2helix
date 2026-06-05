@@ -4,7 +4,7 @@ Persistent recall and pre-action compass for Claude Code, running locally on you
 
 ## Install
 
-**Requires Node 20–25.** Node v26+ is not yet supported by the SQLite dependency.
+**Requires Node 20–26.** `better-sqlite3` is a native module compiled against your Node ABI — see [Native module](#native-module) if recall/compass go quiet after a Node upgrade.
 
 ```bash
 # Use Node 22 LTS (recommended)
@@ -24,7 +24,7 @@ Two hooks integrated into Claude Code's agent loop:
 - **UserPromptSubmit** → recall: searches a local SQLite chronicle for past insights related to your prompt, plus the current session goal, and injects the result as additional context. Writes the current `session_id` to a state file so the MCP server can use the same signature.
 - **PreToolUse** → compass: matches the proposed tool action against a rule set. **WITNESS** classifications (rm -rf wildcards, `git push --force`, `drop table`, prod-context deploys, `--no-verify`) are hard-denied. **PAUSE** classifications (credential-shaped patterns) are soft-denied with an override token — see "PAUSE override flow" below.
 
-Plus an in-process MCP server exposing eight tools:
+Plus an in-process MCP server exposing nine tools:
 
 | Tool | Purpose |
 |------|---------|
@@ -52,16 +52,18 @@ WITNESS has no override path — those operations require manual rule edits.
 
 ## Where state lives
 
-Under Claude Code (the normal install path), data lives at:
+Under Claude Code (the normal install path), data lives under:
 
 ```
-~/.claude/plugins/data/t2helix-inline/
+~/.claude/plugins/data/t2helix-<marketplace>/   # e.g. t2helix-templetwo-t2helix
 ```
+
+(Older Claude Code versions named this dir `t2helix-inline`; the exact suffix is chosen by Claude Code, not the plugin.)
 
 The full resolution order (highest precedence first):
 
 1. `T2HELIX_DATA_DIR` — manual override
-2. `CLAUDE_PLUGIN_DATA` — set by Claude Code when running as a plugin; resolves to `~/.claude/plugins/data/t2helix-inline/`
+2. `CLAUDE_PLUGIN_DATA` — set by Claude Code when running as a plugin; resolves to `~/.claude/plugins/data/t2helix-<marketplace>/` (current Claude Code) or `t2helix-inline` (older)
 3. `~/.t2helix-data/` — standalone fallback when neither env var is set (not the path you want under Claude Code)
 
 Inside the data dir: `chronicle.db` (SQLite, WAL mode, FTS5 indexed) and `.current_session` (the active `session_id`, written by the hooks so the MCP server can use the same signature). The path lives outside the plugin install, so it survives plugin updates and Claude Code session boundaries.
@@ -82,31 +84,39 @@ npm run serve
 cloudflare tunnel --url http://localhost:3742
 ```
 
-Then register `http://localhost:3742/sse` (or your tunnel URL) as an MCP connector in your client. The tool surface is identical to the Claude Code plugin — same eight tools, same chronicle, same data dir.
+Then register `http://localhost:3742/sse` (or your tunnel URL) as an MCP connector in your client. The tool surface is identical to the Claude Code plugin — same nine tools, same chronicle, same data dir.
 
 The stdio path (Claude Code plugin) is unaffected. Both can run simultaneously from the same data dir.
 
 ## Tests
 
 ```bash
-npm run smoke
+npm test              # smoke + regression + integration
+npm run smoke         # library + compass unit tests
+npm run regression    # MCP tool contract (stdio JSON-RPC)
+npm run integration   # spawns the real hooks, asserts the shipped wiring
 ```
 
-Runs `test/smoke.js` against an isolated temp data dir. Covers compass rule classifications, chronicle CRUD, session-state file round-trip, `setGoal` preserve-prior behavior, `getCompassHistory` filters, the full `pending_confirmations` lifecycle, cross-session isolation, and single-use enforcement. 44 tests.
+Each suite runs against an isolated temp data dir. Coverage: compass rule classifications (incl. read-only-vs-mutating prod ops), chronicle CRUD, FTS similarity retrieval, session-state round-trip, `setGoal` preserve-prior, `getCompassHistory` filters, the full `pending_confirmations` lifecycle + atomic single-use enforcement, cross-session isolation, the MCP contract + argument coercion, and — in the integration suite — the live PreToolUse/PostToolUse hooks: the PAUSE override loop, fail-open on adversarial input, and fail-safe gating when the native binding is unavailable. **135 tests total.**
+
+## Native module
+
+The chronicle is backed by `better-sqlite3`, a native module compiled against your Node ABI. If a Node major-version upgrade leaves recall/compass silently inactive (an `ERR_DLOPEN_FAILED` / `NODE_MODULE_VERSION` mismatch), rebuild the binding:
+
+```bash
+npm run rebuild       # npm rebuild better-sqlite3
+```
+
+The hooks **fail safe**: if the binding can't load, rules-based gating (deny `rm -rf /`, force-push, drop-table) still runs and you'll see a one-line "run `npm rebuild better-sqlite3`" hint instead of a crash or a silently-disabled gate.
 
 ## Status
 
-**v0.0.5** — five hooks, full session arc:
+**v0.1.0** — the helix couples: memory and compass feed each other end-to-end.
 
-- Recall hook (UserPromptSubmit) + compass hook (PreToolUse)
-- PostToolUse hook — records significant tool actions (Bash, Edit, Write, MultiEdit) to the chronicle
-- PreCompact hook — archives goal + open threads + insight count before context compression
-- Stop hook — writes session synthesis on close (goal, threads, compass summary)
-- MCP server with eight tools
-- PAUSE soft-deny with token-based override (`pending_confirmations` table, `confirm_pending` tool, single-use enforcement)
-- `recall_compass` — read your own compass gate history
-- Session ID unification via `.current_session` file — MCP writes and hook writes key under the same session UUID
-- `set_goal` preserve-prior — prior goal archived as a `reflection`-layer insight before overwrite
-- 44 smoke tests
-
-Coming in v0.1+: goal-anchor skill. The `edit-no-context` compass rule ships in v0.1 pending the goal-anchor skill.
+- Five hooks: recall (UserPromptSubmit), compass (PreToolUse), action-record (PostToolUse), archive (PreCompact), synthesis (Stop)
+- **Helix coupling (criteria 1–4):** PostToolUse tags outcomes (`outcome:success|failure`); PreToolUse recalls *similar* past actions (real FTS5 similarity, not recency) and escalates OPEN→PAUSE when their outcome history warrants it; compass-fires and outcomes share an `action:<hash>` tag so recall returns both ends of the chain
+- MCP server with nine tools (incl. `recall_compass`, `confirm_pending`, `list_pending`, `resolve_thread`)
+- PAUSE soft-deny with an **atomic single-use** token override
+- Session ID unification via `.current_session`
+- Hardened: lazy/guarded native load (the gate survives a DB outage), portable data dir, bounded `busy_timeout`, FTS query sanitization, MCP argument validation
+- 135 tests (smoke + regression + integration)
