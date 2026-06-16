@@ -15,7 +15,7 @@ no build step and no transpile; the runtime is plain CommonJS on Node 20–26.
 ## Commands
 
 ```bash
-npm test            # full suite: smoke + regression + integration (161 tests)
+npm test            # full suite: smoke + regression + integration (184 tests)
 npm run smoke       # lib unit tests (chronicle CRUD, FTS, compass rules, coupling, redaction)
 npm run regression  # MCP tool contract over stdio JSON-RPC
 npm run integration # spawns the real hooks; asserts shipped wiring + PAUSE override loop + scrub
@@ -61,6 +61,24 @@ They couple through two named criteria:
   writes a chronicle entry tagged `action:<hash>`; PostToolUse tags the resulting outcome
   entry with the *same* `action:<hash>`. Recall by that tag returns both ends of the chain
   — what the compass judged and what then happened.
+
+### Recall surfacing & boundary-active goal (v0.3, the "method-surfacing" stage)
+
+`lib/surface.js` is pure, unit-tested selection logic the UserPromptSubmit hook delegates
+to. Its **cardinal rule**: total injected volume on a normal prompt goes *down* vs v0.2.
+It surfaces at most a goal line + ≤1 relevant **method** + ≤3 relevance-filtered insights,
+gates conversational/ack prompts (and verb-led acks) out of the generic recall entirely,
+and trims harder when a goal already anchors context. Methods (`domain:'method'`, written
+by `record_method`) carry `[method] <shape>` + steps + `Acceptance:` and surface *only*
+via a targeted slug-overlap lookup — never the generic firehose. A smoke test asserts the
+volume claim in characters, not item counts.
+
+`lib/goal-progress.js` (also pure) backs the boundary-active goal: a goal may carry
+`acceptance_criteria`; `set_goal` returns a non-blocking `decomposition_hint` when it has
+none. At Stop (once, never per-tool) `assessCriteria` emits a *soft* per-criterion note —
+token overlap against the session's own insights, rendered `[~] … (related: #id)`, which
+means "mentioned", not "done". `getSessionInsights` feeds it and deliberately excludes
+`archived-goal` rows (else the archived copy of the criteria is phantom evidence).
 
 ### Classifications
 
@@ -142,9 +160,9 @@ fails-open inside the 5s hook budget instead of being killed mid-write) and
 ## MCP server
 
 `mcp/server.js` is hand-rolled JSON-RPC (no SDK transport abstraction beyond the schema
-types) exposing nine tools — `recall`, `record`, `set_goal`, `open_thread`,
-`resolve_thread`, `get_state`, `recall_compass`, `confirm_pending`, `list_pending`. Each
-maps to a `lib/chronicle.js` function. Default transport is `stdio` (the plugin path);
+types) exposing ten tools — `recall`, `record`, `record_method`, `set_goal`,
+`open_thread`, `resolve_thread`, `get_state`, `recall_compass`, `confirm_pending`,
+`list_pending`. Each maps to a `lib/chronicle.js` function. Default transport is `stdio` (the plugin path);
 `--transport sse --port 3742` serves any other MCP client from the same data dir. Both can
 run simultaneously. When adding a tool, update `TOOLS` (schema), the dispatch switch, and
 the regression contract test.
@@ -152,11 +170,13 @@ the regression contract test.
 ## Conventions worth keeping
 
 - **Meta-domain hygiene**: hook-written entries use domains `session-action` /
-  `session-synthesis` / `compass-fire` (the last added in v0.2) and are excluded from
-  `recall()` / `get_state()` by default so curated content surfaces first. Pass
-  `include_meta:true` to see them — the helix coupling already does. New hook-noise
-  domains should be added to `META_DOMAINS` in `chronicle.js`. (`session-compact`
-  PreCompact snapshots are a candidate for the same treatment.)
+  `session-synthesis` / `compass-fire` (v0.2) / `method` (v0.3) and are excluded from
+  `recall()` / `get_state()` by default so curated content surfaces first. `method` is
+  here so methods surface ONLY via the targeted lookup, never the generic firehose
+  (the Stage-2 cardinal rule). Pass `include_meta:true` to see meta entries — the helix
+  coupling and the method lookup already do. New hook-noise domains should be added to
+  `META_DOMAINS` in `chronicle.js`. (`session-compact` PreCompact snapshots are a
+  candidate for the same treatment.)
 - **FTS query sanitization**: `recall()` quotes each token as an FTS5 string literal
   because action summaries contain `:`/`-`/`(` which FTS5 parses as operators (a bare
   `Bash: git…` query throws "no such column: Bash"). Don't pass raw user/action strings

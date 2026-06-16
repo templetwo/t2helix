@@ -9,7 +9,8 @@
 // recall() genuinely powerful — not just "what have I learned" but "what was
 // I doing in sessions like this one."
 
-const { getState, getCompassHistory, record, readCurrentSession, writeCurrentSession, prune } = require('../lib/chronicle');
+const { getState, getCompassHistory, record, readCurrentSession, writeCurrentSession, prune, getSessionInsights } = require('../lib/chronicle');
+const { assessCriteria, formatCriteriaProgress } = require('../lib/goal-progress');
 const { readStdin } = require('../lib/hook-io');
 
 async function main() {
@@ -41,7 +42,21 @@ async function main() {
     if (goal && goal.goal) {
       lines.push(`Goal: ${goal.goal}`);
       if (goal.acceptance_criteria && goal.acceptance_criteria.length) {
-        lines.push(`Acceptance criteria: ${goal.acceptance_criteria.join('; ')}`);
+        // Boundary-active goal (v0.3 step 3): a soft per-criterion progress note
+        // — token overlap against THIS session's own insights, never a verdict.
+        // Own try/catch so a heuristic miss degrades to the flat criteria list
+        // rather than costing the whole synthesis write.
+        let progress;
+        try {
+          const sessionInsights = getSessionInsights(session_id || 'unknown', { limit: 100 });
+          progress = formatCriteriaProgress(
+            assessCriteria({ criteria: goal.acceptance_criteria, insights: sessionInsights })
+          );
+        } catch (_) {
+          const ac = goal.acceptance_criteria;
+          progress = [`Acceptance criteria: ${Array.isArray(ac) ? ac.join('; ') : String(ac)}`];
+        }
+        for (const l of progress) lines.push(l);
       }
     } else {
       lines.push('Goal: (none set this session)');

@@ -199,6 +199,53 @@ test('PostToolUse: read-only tool (Read) → {} and no chronicle entry', () => {
   assert.strictEqual(after, before, 'read-only tools write nothing');
 });
 
+// ── UserPromptSubmit: method surfacing + de-noise wiring (v0.3 step 2) ───────
+
+test('UserPromptSubmit: injects a relevant method; trivial prompt yields no generic dump', () => {
+  const sid = 'ups-' + Date.now();
+  ch.recordMethod({
+    session_id: sid, shape: 'rotate-bridge-token',
+    steps: ['read -s prompt', 'write env + plist', 'launchctl reload'],
+    acceptance: 'heartbeat 200', tool_classes: ['Bash']
+  });
+  // Substantive prompt sharing tokens with the method shape → method leads.
+  const r1 = runHook('user-prompt-submit.js', { session_id: sid, prompt: 'how do I rotate the bridge token' });
+  assert.strictEqual(r1.code, 0);
+  const ctx1 = (r1.out.hookSpecificOutput && r1.out.hookSpecificOutput.additionalContext) || '';
+  assert.ok(/Method for this kind of task:/.test(ctx1), 'relevant method injected as a section');
+  assert.ok(/rotate-bridge-token/.test(ctx1), 'method content present');
+  // Trivial prompt → no generic "Related from chronicle" dump.
+  const r2 = runHook('user-prompt-submit.js', { session_id: sid, prompt: 'yea' });
+  assert.strictEqual(r2.code, 0);
+  const ctx2 = (r2.out.hookSpecificOutput && r2.out.hookSpecificOutput.additionalContext) || '';
+  assert.ok(!/Related from chronicle:/.test(ctx2), 'generic recall suppressed on a trivial prompt');
+});
+
+// ── Stop: boundary-active goal → per-criterion progress (v0.3 step 3) ────────
+
+test('Stop synthesis: per-criterion progress with a soft unfinished marker', () => {
+  const sid = 'stop-goal-' + Date.now();
+  ch.setGoal({
+    session_id: sid,
+    goal: 'wire the boundary-active goal',
+    acceptance_criteria: ['parser tokenization fixed', 'PR opened for review']
+  });
+  // One criterion has in-session evidence; the other does not.
+  ch.record({ session_id: sid, content: 'fixed the parser tokenization edge case', domain: 't2helix' });
+
+  const r = runHook('stop.js', { session_id: sid });
+  assert.strictEqual(r.code, 0, `stop exited ${r.code}: ${r.stderr}`);
+  assert.deepStrictEqual(r.out, {}, 'stop fails-open with empty {}');
+
+  const synth = ch.db()
+    .prepare(`SELECT content FROM insights WHERE session_id = ? AND domain = 'session-synthesis' ORDER BY created_at DESC LIMIT 1`)
+    .get(sid);
+  assert.ok(synth, 'stop wrote a session-synthesis record');
+  assert.ok(/Acceptance criteria \(1\/2 with a related insight this session\):/.test(synth.content), 'count header present');
+  assert.ok(/\[~\] parser tokenization fixed \(related: #/.test(synth.content), 'related criterion marked [~]');
+  assert.ok(/\[ \] PR opened for review \(no related insight\)/.test(synth.content), 'unrelated criterion marked open');
+});
+
 // ── scrub: the one-shot redact-sweep against already-leaked rows ─────────────
 
 test('redact-sweep: scrubs a pre-existing leaked row from insights + compass_log + FTS', () => {

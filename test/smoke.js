@@ -1097,6 +1097,247 @@ test('compass: pattern_source resolves to a RegExp (fail-loud guard exists)', ()
   assert.strictEqual(r.rule_id, 'credential-paste');
 });
 
+// ============================================================================
+// v0.3 Stage 2: method store (recordMethod) — domain:'method', surfaced only via
+// targeted lookup, excluded from the generic firehose.
+// ============================================================================
+
+test('recordMethod: formats numbered steps, tags shape+source+tool, excluded from default recall', () => {
+  const sid = 'method-' + Date.now();
+  const shape = 'rotate-token-' + Date.now();
+  const r = ch.recordMethod({ session_id: sid, shape, steps: ['read -s prompt', 'write env + plist', 'launchctl reload'], acceptance: 'heartbeat 200', tool_classes: ['Bash'] });
+  assert.ok(r.id, 'returns id');
+  const m = ch.recall({ query: shape, topK: 5, include_meta: true, tag: 'method' }).find(h => h.tags && h.tags.includes(`shape:${shape}`));
+  assert.ok(m, 'recallable via include_meta + tag');
+  assert.strictEqual(m.domain, 'method');
+  assert.strictEqual(m.layer, 'ground_truth');
+  assert.strictEqual(m.intensity, 0.8);
+  assert.ok(/^\[method\] /.test(m.content), 'has [method] header');
+  assert.ok(/1\. read -s prompt/.test(m.content) && /3\. launchctl reload/.test(m.content), 'numbered steps');
+  assert.ok(/Acceptance: heartbeat 200/.test(m.content), 'acceptance line');
+  assert.ok(m.tags.includes('source:explicit') && m.tags.includes('tool:bash'), 'source + tool tags');
+  // The cardinal-rule guarantee: methods never enter the generic firehose.
+  assert.ok(!ch.recall({ query: shape, topK: 10 }).some(h => h.tags && h.tags.includes('method')), 'excluded from default recall');
+  assert.ok(!ch.getState(sid).recent_insights.some(i => i.domain === 'method'), 'excluded from getState surface');
+});
+
+test('recordMethod: rejects empty shape / no steps; auto-distill ranks lower', () => {
+  assert.throws(() => ch.recordMethod({ session_id: 's', shape: '   ', steps: ['x'] }), /shape/);
+  assert.throws(() => ch.recordMethod({ session_id: 's', shape: 'x', steps: [] }), /step/);
+  const shape = 'auto-shape-' + Date.now();
+  const r = ch.recordMethod({ session_id: 's-auto', shape, steps: ['a step'], source: 'auto-distill' });
+  const m = ch.recall({ query: shape, topK: 5, include_meta: true, tag: 'method' }).find(h => h.id === r.id);
+  assert.strictEqual(m.layer, 'hypothesis', 'auto-distill is lower-confidence');
+  assert.ok(m.tags.includes('source:auto-distill'));
+});
+
+// ============================================================================
+// v0.3 Stage 2 step 2: recall-surface selection (lib/surface) — the cardinal rule
+// ============================================================================
+const surface = require('../lib/surface');
+
+test('surface.isTrivialPrompt: acks + short-no-token trivial; task prompts not', () => {
+  for (const p of ['yea', 'nice thats fine', 'ok', 'try hq again', 'merge it', 'keep going'])
+    assert.ok(surface.isTrivialPrompt(p), `"${p}" should be trivial`);
+  for (const p of ['fix the parser bug in lib/secrets.js', 'how do I rotate the bridge token', 'review the credential diff'])
+    assert.ok(!surface.isTrivialPrompt(p), `"${p}" should NOT be trivial`);
+});
+
+test('surface.isTrivialPrompt: imperative-verb-led short prompts are tasks, not trivial', () => {
+  // These are real work and used to be silenced as "short + no identifier".
+  for (const p of ['run tests', 'deploy the worker', 'rebuild', 'merge the auth branch', 'revert that'])
+    assert.ok(!surface.isTrivialPrompt(p), `"${p}" leads with a task verb → NOT trivial`);
+  // Verb-shaped ACKS are still trivial (ACK_RE wins before the verb check).
+  for (const p of ['run it', 'merge it', 'do it', 'go ahead'])
+    assert.ok(surface.isTrivialPrompt(p), `"${p}" is an ack → trivial`);
+});
+
+test('surface.selectInjection: trivial prompt suppresses generic recall', () => {
+  const generic = [{ id: 1, content: 'unrelated chatter', tags: [], domain: 'x' }];
+  const r = surface.selectInjection({ goal: null, prompt: 'yea', recall: () => generic });
+  assert.strictEqual(r.trivial, true);
+  assert.strictEqual(r.hits.length, 0, 'no generic insights on a trivial prompt');
+});
+
+test('surface.selectInjection: active goal trims generic recall to topK 2 + relevance-filters', () => {
+  let askedTopK = null;
+  const recall = (opts) => {
+    if (opts.tag === 'method') return [];
+    askedTopK = opts.topK;
+    return [
+      { id: 1, content: 'parser tokenization edge cases', tags: [], domain: 'x' },
+      { id: 2, content: 'totally unrelated pizza note', tags: [], domain: 'x' }
+    ].slice(0, opts.topK);
+  };
+  const r = surface.selectInjection({ goal: { goal: 'fix the parser tokenization' }, prompt: 'parser tokenization bug', recall });
+  assert.strictEqual(askedTopK, 2, 'goal active -> topK 2 (trim harder)');
+  assert.ok(r.hits.length >= 1 && r.hits.every(h => /parser|token/.test(h.content)), 'relevance-filtered to shared tokens');
+});
+
+test('surface.selectInjection: method surfaces only above the relevance bar', () => {
+  const method = { id: 9, content: '[method] rotate-bridge-token\n1. read -s\n2. write env', domain: 'method', tags: ['method', 'shape:rotate-bridge-token', 'source:explicit'], layer: 'ground_truth' };
+  const recall = (opts) => (opts.tag === 'method' ? [method] : []);
+  const hit = surface.selectInjection({ goal: { goal: 'rotate the bridge token on HQ' }, prompt: 'do it', recall });
+  assert.ok(hit.method && hit.method.id === 9, 'relevant method surfaced (slug shares tokens)');
+  const miss = surface.selectInjection({ goal: { goal: 'design the dashboard layout' }, prompt: 'do it', recall });
+  assert.strictEqual(miss.method, null, 'irrelevant method NOT surfaced (weak match = no method)');
+});
+
+test('surface.selectInjection: caps generic hits at 3 and is fail-open', () => {
+  const many = Array.from({ length: 8 }, (_, i) => ({ id: i, content: `shared token chronicle entry number ${i}`, tags: [], domain: 'x' }));
+  const r = surface.selectInjection({ goal: null, prompt: 'chronicle entry token', recall: (o) => (o.tag === 'method' ? [] : many.slice(0, o.topK)) });
+  assert.ok(r.hits.length <= 3, 'never more than 3 insights');
+  const safe = surface.selectInjection({ goal: null, prompt: 'something real here', recall: () => { throw new Error('boom'); } });
+  assert.deepStrictEqual({ m: safe.method, h: safe.hits.length }, { m: null, h: 0 }, 'recall throw is fail-open');
+});
+
+test('surface.selectInjection: a method never lands in the generic hits (defense in depth)', () => {
+  // Simulate a misbehaving generic recall that returns a method row anyway
+  // (e.g. a future include_meta on this path). It must be dropped from hits.
+  const recall = (o) => o.tag === 'method'
+    ? []
+    : [
+        { id: 1, content: 'shared chronicle token note', tags: [], domain: 'x' },
+        { id: 2, content: 'shared chronicle token method body', tags: ['method'], domain: 'method' }
+      ].slice(0, o.topK);
+  const r = surface.selectInjection({ goal: null, prompt: 'shared chronicle token', recall });
+  assert.ok(!r.hits.some(h => h.domain === 'method'), 'method dropped from the generic firehose');
+});
+
+test('surface volume (cardinal rule): method+3-hit injection ≤ the v0.2 5-hit firehose in chars', () => {
+  // The cardinal rule is "total injected volume goes DOWN". Make it CHECKABLE on
+  // the metric that matters (rendered characters / tokens), not item counts: a
+  // matched method is intentional signal that REPLACES hits, and the worst-case
+  // v0.3 block (goal + 1 method + capped 3 hits) must not exceed the worst-case
+  // v0.2 block (goal + 5 hits) it stands in for.
+  const goal = { goal: 'ship the redaction PR', why: 'close the credential leak' };
+  const mkHit = (i) => ({ id: i, domain: 'd', layer: 'hypothesis', content: ('relevant chronicle insight ' + i + ' ').repeat(20) });
+  const v2 = surface.buildContext({ goal, method: null, hits: [1, 2, 3, 4, 5].map(mkHit) });
+  const method = { content: '[method] ship-pr\n' + '1. a reasonably long playbook step here '.repeat(15), tags: ['method'] };
+  const v3 = surface.buildContext({ goal, method, hits: [1, 2, 3].map(mkHit) });
+  assert.ok(v3.length <= v2.length, `v0.3 injection (${v3.length} chars) must not exceed v0.2 (${v2.length} chars)`);
+});
+
+test('surface.buildContext: method leads the insights section; goal shown', () => {
+  const ctx = surface.buildContext({
+    goal: { goal: 'G' },
+    method: { content: '[method] x\n1. step', tags: [] },
+    hits: [{ id: 1, content: 'h1', domain: 'd', layer: 'hypothesis' }]
+  });
+  assert.ok(ctx.indexOf('**Method for this kind of task:**') < ctx.indexOf('**Related from chronicle:**'), 'method leads insights');
+  assert.ok(/Current goal:/.test(ctx));
+});
+
+// ============================================================================
+// v0.3 Stage 2 step 3: boundary-active goal — set_goal decomposition offer,
+// session-scoped insight read, and the soft per-criterion progress assessment.
+// ============================================================================
+const goalProgress = require('../lib/goal-progress');
+
+test('goal-progress.assessCriteria: token overlap marks addressed vs unfinished', () => {
+  const insights = [
+    { id: 11, content: 'fixed the parser tokenization edge case in lib/secrets' },
+    { id: 12, content: 'ran the full smoke suite, all green' }
+  ];
+  const criteria = ['parser tokenization fixed', 'PR opened for review'];
+  const assessed = goalProgress.assessCriteria({ criteria, insights });
+  assert.strictEqual(assessed.length, 2);
+  assert.deepStrictEqual(
+    { a: assessed[0].addressed, id: assessed[0].evidenceId },
+    { a: true, id: 11 },
+    'criterion with shared tokens is addressed, points at the evidence id'
+  );
+  assert.strictEqual(assessed[1].addressed, false, 'criterion with no evidence is unfinished');
+  assert.strictEqual(assessed[1].evidenceId, null);
+});
+
+test('goal-progress: single-token criterion needs only that token; empty list → []', () => {
+  const insights = [{ id: 5, content: 'deployed to HQ and verified heartbeat' }];
+  const assessed = goalProgress.assessCriteria({ criteria: ['deployed'], insights });
+  assert.strictEqual(assessed[0].addressed, true, 'one-token criterion matches on that token alone');
+  assert.deepStrictEqual(goalProgress.assessCriteria({ criteria: [], insights }), []);
+  assert.deepStrictEqual(goalProgress.formatCriteriaProgress([]), [], 'no criteria → no lines');
+});
+
+test('goal-progress.formatCriteriaProgress: soft markers, count header, unfinished tally', () => {
+  const lines = goalProgress.formatCriteriaProgress([
+    { text: 'tests green', addressed: true, evidenceId: 7 },
+    { text: 'PR opened', addressed: false, evidenceId: null }
+  ]);
+  const blob = lines.join('\n');
+  assert.ok(/Acceptance criteria \(1\/2 with a related insight this session\):/.test(blob), 'count header');
+  // '~' not 'x', and "related" not "evidence" — a related insight is not a verdict.
+  assert.ok(/\[~\] tests green \(related: #7\)/.test(blob), 'related line marked [~], cites the insight');
+  assert.ok(/\[ \] PR opened \(no related insight\)/.test(blob), 'no-related line');
+  assert.ok(/not a completion check/.test(blob) && /1 criterion\(s\) have no related insight/.test(blob), 'soft tally + honest caveat');
+});
+
+test('chronicle.getSessionInsights: session-scoped, excludes meta domains', () => {
+  const sid = 'gsi-' + Date.now();
+  ch.record({ session_id: sid, content: 'real work insight for this session', domain: 't2helix' });
+  ch.record({ session_id: sid, content: '[compass-fire] noise', domain: 'compass-fire', layer: 'reflection' });
+  ch.record({ session_id: 'gsi-other', content: 'belongs to another session', domain: 't2helix' });
+  const rows = ch.getSessionInsights(sid);
+  assert.ok(rows.some(r => /real work insight/.test(r.content)), 'returns this session\'s work insight');
+  assert.ok(!rows.some(r => r.domain === 'compass-fire'), 'excludes meta domains');
+  assert.ok(!rows.some(r => /another session/.test(r.content)), 'scoped to the session_id');
+});
+
+test('chronicle.setGoal: offers decomposition when no criteria; preserves boundary on re-set', () => {
+  const sid = 'goal-offer-' + Date.now();
+  const r0 = ch.setGoal({ session_id: sid, goal: 'do the thing' });
+  assert.strictEqual(r0.acceptance_criteria_count, 0);
+  assert.ok(typeof r0.decomposition_hint === 'string' && /acceptance_criteria/.test(r0.decomposition_hint), 'offers a lightweight decomposition');
+
+  const r1 = ch.setGoal({ session_id: sid, goal: 'do the thing', acceptance_criteria: ['a', 'b'] });
+  assert.strictEqual(r1.acceptance_criteria_count, 2);
+  assert.ok(!('decomposition_hint' in r1), 'no offer once a boundary exists');
+
+  // An idempotent re-set (same goal, criteria omitted) preserves the boundary
+  // via the JS criteriaJson logic → still no offer.
+  const r2 = ch.setGoal({ session_id: sid, goal: 'do the thing' });
+  assert.strictEqual(r2.acceptance_criteria_count, 2, 'boundary preserved across criteria-less re-set');
+  assert.ok(!('decomposition_hint' in r2));
+});
+
+test('chronicle.setGoal: cleans junk/dupes; [] preserves; cosmetic re-state keeps boundary', () => {
+  const sid = 'goal-clean-' + Date.now();
+  // Junk + dupes + non-strings → stored count must match the cleaned set (was a
+  // count-vs-assessed mismatch before the fix).
+  const r0 = ch.setGoal({ session_id: sid, goal: 'ship the fix', acceptance_criteria: ['tests green', '', '  ', 'tests green', 42, null, 'PR opened'] });
+  assert.strictEqual(r0.acceptance_criteria_count, 2, 'count reflects cleaned+deduped criteria, not junk');
+  assert.deepStrictEqual(ch.getGoal(sid).acceptance_criteria, ['tests green', 'PR opened']);
+
+  // acceptance_criteria:[] is treated as "omitted" → preserves, never wipes.
+  const r1 = ch.setGoal({ session_id: sid, goal: 'ship the fix', acceptance_criteria: [] });
+  assert.strictEqual(r1.acceptance_criteria_count, 2, '[] must not wipe the boundary');
+  assert.ok(!('decomposition_hint' in r1), 'no offer re-fired by an empty array');
+
+  // Cosmetic drift (trailing space + recapitalization) is NOT a new goal.
+  const r2 = ch.setGoal({ session_id: sid, goal: 'Ship the fix ' });
+  assert.strictEqual(r2.acceptance_criteria_count, 2, 'whitespace/case re-state keeps criteria');
+  assert.deepStrictEqual(ch.getGoal(sid).acceptance_criteria, ['tests green', 'PR opened']);
+
+  // A genuinely different goal DOES reset the boundary (and offers again).
+  const r3 = ch.setGoal({ session_id: sid, goal: 'write the docs' });
+  assert.strictEqual(r3.acceptance_criteria_count, 0, 'new goal starts unbounded');
+  assert.ok('decomposition_hint' in r3, 'offer fires for a genuinely new goal');
+});
+
+test('chronicle.getSessionInsights + assessCriteria: archived-goal rows are NOT phantom evidence', () => {
+  const sid = 'phantom-' + Date.now();
+  // Set a bounded goal, then change it — setGoal archives the prior goal (with
+  // its Acceptance: [...] text) as a domain:t2helix / archived-goal insight.
+  ch.setGoal({ session_id: sid, goal: 'first goal', acceptance_criteria: ['deploy the worker', 'tests green'] });
+  ch.setGoal({ session_id: sid, goal: 'second goal', acceptance_criteria: ['deploy the worker', 'tests green'] });
+  // No actual work recorded this session. The archived copy of the criteria must
+  // NOT be returned as the evidence corpus.
+  const corpus = ch.getSessionInsights(sid);
+  assert.ok(!corpus.some(r => r.content.includes('[archived-goal]')), 'archived-goal rows excluded from evidence corpus');
+  const assessed = goalProgress.assessCriteria({ criteria: ch.getGoal(sid).acceptance_criteria, insights: corpus });
+  assert.ok(assessed.every(a => !a.addressed), 'no phantom evidence — every criterion is open with no real work done');
+});
+
 ch.close();
 
 console.log(`\n${pass} passed, ${fail} failed`);

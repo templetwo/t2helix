@@ -24,13 +24,14 @@ Two hooks integrated into Claude Code's agent loop:
 - **UserPromptSubmit** → recall: searches a local SQLite chronicle for past insights related to your prompt, plus the current session goal, and injects the result as additional context. Writes the current `session_id` to a state file so the MCP server can use the same signature.
 - **PreToolUse** → compass: matches the proposed tool action against a rule set. **WITNESS** classifications (rm -rf wildcards, `git push --force`, `drop table`, prod-context deploys, `--no-verify`) are hard-denied. **PAUSE** classifications (credential-shaped patterns) are soft-denied with an override token — see "PAUSE override flow" below. As of v0.2, any credential that reaches the chronicle is redacted to a fingerprint on the way in (`lib/secrets.js`), at the `record()` / `logCompass()` write chokepoints.
 
-Plus an in-process MCP server exposing nine tools:
+Plus an in-process MCP server exposing ten tools:
 
 | Tool | Purpose |
 |------|---------|
-| `recall` | Search the chronicle for past insights by query (FTS5 + recency-weighted). Filters: `layer` (`ground_truth`/`hypothesis`/`reflection`, single or array), `min_intensity`, `include_meta`, `since`/`until` (epoch ms). Hook-generated entries (`session-action`, `session-synthesis`) are excluded by default; pass `include_meta:true` to see them. |
+| `recall` | Search the chronicle for past insights by query (FTS5 + recency-weighted). Filters: `layer` (`ground_truth`/`hypothesis`/`reflection`, single or array), `min_intensity`, `include_meta`, `since`/`until` (epoch ms). Hook-generated entries (`session-action`, `session-synthesis`, `compass-fire`, `method`) are excluded by default; pass `include_meta:true` to see them. |
 | `record` | Write a new insight inline. |
-| `set_goal` | Anchor a session goal. Archives any prior goal as a `reflection`-layer insight tagged `archived-goal`. |
+| `record_method` | (v0.3) Capture a reusable procedure keyed to a task shape (`shape`, `steps`, `acceptance`, `tool_classes`). Stored as a `domain:'method'` insight; surfaced only via the targeted method lookup, never the generic recall firehose. |
+| `set_goal` | Anchor a session goal. Archives any prior goal as a `reflection`-layer insight tagged `archived-goal`. (v0.3) Optionally takes `acceptance_criteria`; with none, returns a non-blocking `decomposition_hint`. |
 | `open_thread` | Capture an unresolved question to revisit later. |
 | `resolve_thread` | Close an open thread by id with a resolution. Stamps `resolved_at` + `resolution`; thread drops out of `get_state.open_threads`. |
 | `get_state` | Read current goal + recent open threads + recent insights. |
@@ -84,7 +85,7 @@ npm run serve
 cloudflare tunnel --url http://localhost:3742
 ```
 
-Then register `http://localhost:3742/sse` (or your tunnel URL) as an MCP connector in your client. The tool surface is identical to the Claude Code plugin — same nine tools, same chronicle, same data dir.
+Then register `http://localhost:3742/sse` (or your tunnel URL) as an MCP connector in your client. The tool surface is identical to the Claude Code plugin — same ten tools, same chronicle, same data dir.
 
 The stdio path (Claude Code plugin) is unaffected. Both can run simultaneously from the same data dir.
 
@@ -97,7 +98,7 @@ npm run regression    # MCP tool contract (stdio JSON-RPC)
 npm run integration   # spawns the real hooks, asserts the shipped wiring
 ```
 
-Each suite runs against an isolated temp data dir. Coverage: compass rule classifications (incl. read-only-vs-mutating prod ops), chronicle CRUD, FTS similarity retrieval, session-state round-trip, `setGoal` preserve-prior, `getCompassHistory` filters, the full `pending_confirmations` lifecycle + atomic single-use enforcement, cross-session isolation, the MCP contract + argument coercion, and — in the integration suite — the live PreToolUse/PostToolUse hooks: the PAUSE override loop, fail-open on adversarial input, and fail-safe gating when the native binding is unavailable, plus (v0.2) secret redaction at the write chokepoints, compass-fire recall exclusion, redact-or-drop fail-safe, retention pruning, and an end-to-end `redact-sweep` scrub. **161 tests total.**
+Each suite runs against an isolated temp data dir. Coverage: compass rule classifications (incl. read-only-vs-mutating prod ops), chronicle CRUD, FTS similarity retrieval, session-state round-trip, `setGoal` preserve-prior, `getCompassHistory` filters, the full `pending_confirmations` lifecycle + atomic single-use enforcement, cross-session isolation, the MCP contract + argument coercion, and — in the integration suite — the live PreToolUse/PostToolUse hooks: the PAUSE override loop, fail-open on adversarial input, and fail-safe gating when the native binding is unavailable, plus (v0.2) secret redaction at the write chokepoints, compass-fire recall exclusion, redact-or-drop fail-safe, retention pruning, and an end-to-end `redact-sweep` scrub, plus (v0.3) the method store + firehose-exclusion, recall-surface selection (gate/relevance/caps/char-volume), and the boundary-active goal lifecycle + Stop per-criterion synthesis. **184 tests total.**
 
 ## Native module
 
@@ -111,6 +112,13 @@ npm run redact-sweep  # one-shot scrub of credentials that leaked into the chron
 The hooks **fail safe**: if the binding can't load, rules-based gating (deny `rm -rf /`, force-push, drop-table) still runs and you'll see a one-line "run `npm rebuild better-sqlite3`" hint instead of a crash or a silently-disabled gate.
 
 ## Status
+
+**v0.3.0 — Method-Surfacing (Stage 2).** Recall learns to surface the *procedure*, not just facts — under a strict cardinal rule that total injected volume goes *down*.
+
+- **Method store** (`record_method` → `domain:'method'` insights): `[method] <shape>` + steps + `Acceptance:`, surfaced *only* via a targeted slug-overlap lookup, never the generic firehose. Flows through `record()`, so redaction still applies.
+- **De-noised recall** (`lib/surface.js`, pure): ≤1 method + ≤3 relevance-filtered insights; conversational/ack prompts draw no generic dump; trims harder when a goal anchors context. The volume claim is asserted in characters, not item counts.
+- **Boundary-active goal** (`lib/goal-progress.js`): `set_goal` offers a non-blocking `acceptance_criteria` decomposition; the Stop synthesis emits a *soft* per-criterion note (`[~] … (related: #id)` — "mentioned", not a verdict). Once at Stop, never per-tool.
+- **Hardened after a five-lens adversarial review:** fixed a phantom-evidence blocker (archived-goal text no longer counts as criterion evidence), a cosmetic-re-state criteria drop, and an `acceptance_criteria:[]` boundary wipe. Auto-distill deferred behind a promote gate.
 
 **v0.2.0 — Security & Clean Surface.** The recall surface no longer leaks credentials.
 

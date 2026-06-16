@@ -3,26 +3,7 @@
 
 const { recall, getGoal, writeCurrentSession } = require('../lib/chronicle');
 const { readStdin } = require('../lib/hook-io');
-
-function buildContext({ goal, hits }) {
-  const lines = ['## T2Helix recall'];
-  if (goal && goal.goal) {
-    lines.push(`**Current goal:** ${goal.goal}`);
-    if (goal.why) lines.push(`_Why:_ ${goal.why}`);
-  } else {
-    lines.push('_No session goal set. Set one with mcp__t2helix__set_goal to anchor the work._');
-  }
-  if (hits && hits.length) {
-    lines.push('', '**Related from chronicle:**');
-    for (const h of hits) {
-      const tag = h.domain ? ` [${h.domain}]` : '';
-      const layer = h.layer && h.layer !== 'hypothesis' ? ` (${h.layer})` : '';
-      const snippet = h.content.length > 240 ? h.content.slice(0, 240) + '…' : h.content;
-      lines.push(`- _#${h.id}${tag}${layer}_ ${snippet}`);
-    }
-  }
-  return lines.join('\n');
-}
+const { selectInjection, buildContext } = require('../lib/surface');
 
 async function main() {
   let input;
@@ -46,9 +27,11 @@ async function main() {
   let ctx = '';
   try {
     const goal = getGoal(session_id);
-    const hits = recall({ query: prompt, topK: 5 });
-    if (goal || (hits && hits.length)) {
-      ctx = buildContext({ goal, hits });
+    // v0.3: targeted method + de-noised, gated, capped generic recall (cardinal
+    // rule — total injection goes down). selectInjection guards each lookup.
+    const { method, hits } = selectInjection({ goal, prompt, recall });
+    if ((goal && goal.goal) || method || (hits && hits.length)) {
+      ctx = buildContext({ goal, method, hits });
     }
   } catch (e) {
     process.stdout.write(JSON.stringify({ systemMessage: `t2helix recall failed: ${e.message}` }));
