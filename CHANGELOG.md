@@ -3,6 +3,79 @@
 All notable changes to t2helix are documented here. Format loosely follows
 [Keep a Changelog](https://keepachangelog.com/); versioning is [SemVer](https://semver.org/).
 
+## [0.3.0] — Method-Surfacing (Stage 2)
+
+Stage 2 builds on the clean v0.2 surface. v0.2 removed the noise (and the leak);
+v0.3 adds the one thing recall still couldn't do — *"for this shape of task, here
+is the procedure that worked last time."* The **cardinal rule** governs the whole
+stage: total injected volume on a normal prompt goes **DOWN**, not up. Methods are
+sharp, procedure-bearing injections that **replace** generic-recall noise; if the
+surface got noisier, the feature failed. The injected block is at most a goal line
++ ≤1 relevant method + ≤3 relevance-filtered insights, and a conversational prompt
+suppresses the generic insights entirely.
+
+### Added
+- **Method store — no new table.** A method is a `domain:'method'` insight:
+  `[method] <shape>` + numbered steps + `Acceptance:`, tagged `method` /
+  `shape:<slug>` / `source:explicit` / `tool:<class>`. It flows through `record()`,
+  so Stage-1 redaction scrubs any credential in the steps. `method` is a META
+  domain, so methods **never** enter the generic recall firehose — they surface
+  only via the targeted lookup below.
+- **`record_method` MCP tool** (the server now exposes **ten** tools): capture a
+  reusable procedure keyed to a task shape. Explicit methods are `ground_truth`;
+  the deferred auto-distill path would land lower-confidence `hypothesis` methods.
+- **Targeted method surfacing + de-noised recall** (`lib/surface.js`, pure/testable;
+  the UserPromptSubmit hook is thin wiring). On each prompt: look up a method by
+  similarity to the goal/prompt above a slug-overlap relevance bar (a weak match
+  surfaces nothing — a wrong method is worse than none); shrink generic recall
+  (`topK 5 → 3`, harder when a goal already anchors context) and relevance-filter
+  it; **gate** conversational / acknowledgment / verb-led-ack prompts so they draw
+  no generic dump. A smoke test asserts the volume claim in **characters** (v0.3
+  block ≤ the v0.2 5-hit firehose), not item counts.
+- **Boundary-active goal.** `set_goal` with no `acceptance_criteria` returns a
+  lightweight, **non-blocking** `decomposition_hint` (the model may act or ignore;
+  the goal is already committed); with criteria it returns `acceptance_criteria_count`.
+  The Stop synthesis emits a **soft** per-criterion note (`lib/goal-progress.js`):
+  token overlap against the session's own insights, rendered `[~] … (related: #id)`
+  / `[ ] … (no related insight)` — "mentioned", never a verdict. Runs once at Stop;
+  **never per-tool** (PostToolUse stays record-only). Per-prompt injection is
+  unchanged, so criteria surface only at the two boundaries (goal-set, session-end).
+
+### Hardened after adversarial review
+A five-lens review (cardinal-rule/volume, security/redaction, fail-open, correctness,
+contract) found one blocker, two major correctness bugs, and several hardening items:
+- **Blocker — phantom criterion evidence.** `setGoal` archives a prior goal as an
+  insight embedding its `Acceptance: […]` text; that archived copy token-matched the
+  *current* criteria, so any goal change reported criteria "addressed" with zero work
+  done. The evidence corpus (`getSessionInsights`) now excludes `archived-goal` rows.
+- **Major — cosmetic re-state dropped criteria.** Goal-change was an exact string
+  compare; `"ship it "` vs `"ship it"` reset the live boundary. Now compared on
+  normalized (trim / case-fold / whitespace-collapse) text.
+- **Major — `acceptance_criteria: []` wiped the boundary** and re-fired the offer.
+  Criteria are now cleaned/deduped; an empty/all-junk array is treated as "omitted"
+  (preserve), and the stored count matches the assessed count.
+- Soft-marker wording made honest on both sides (`[~]` + "related", not `[x]` +
+  "evidence"); verb-led short prompts (`run tests`, `rebuild`) are no longer silenced;
+  defense-in-depth drop of `domain:'method'` from generic hits; Stop catch-fallback
+  guards a non-array criteria value.
+
+### Tests
+- **184 total** (122 smoke + 48 regression + 14 integration): the method store and
+  its firehose-exclusion, surface selection (gate, relevance bar, caps, fail-open,
+  verb-escape, method-drop, char-volume), the boundary lifecycle (offer, clean/dedupe,
+  `[]`-preserve, cosmetic-re-state, phantom-evidence exclusion), and the Stop
+  per-criterion synthesis end-to-end.
+
+### Deferred
+- **Auto-distill** (a Stop-time method writer) — deferred behind an explicit
+  promote-to-trusted gate. A new high-frequency writer is exactly the v0.1
+  compass-fire pollution risk; ship explicit-only, measure injected volume, add it
+  later (the cardinal rule outranks the convenience).
+- The `goals` table is the one remaining unscrubbed write surface (`goal` / `why` /
+  `acceptance_criteria` persisted raw, read back into context). Pre-existing (not a
+  Stage 2 regression); flagged for a follow-up that routes the three fields through
+  `secrets.scrub`.
+
 ## [0.2.0] — Security & Clean Surface
 
 Stage 1 of v0.2: a recall surface with zero credential leakage. The

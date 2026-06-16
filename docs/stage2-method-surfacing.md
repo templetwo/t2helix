@@ -9,6 +9,15 @@ Surface the **method**, not more facts. Total injected volume on a normal prompt
 goes **DOWN** relative to v0.2, not up. If the surface gets noisier, the feature
 failed — no matter how good the methods are.
 
+**Metric (made explicit after review):** "volume" is rendered **characters/tokens**,
+not raw line count. A matched method is intentional, high-signal content that
+*replaces* generic hits (worst case: goal + 1 method + 3 hits, vs v0.2's goal + 5
+hits); a multi-line method is denser per line but smaller overall. The claim is
+checkable, not asserted: a smoke test (`surface volume (cardinal rule)`) renders
+the worst-case v0.3 block and asserts it does not exceed the v0.2 5-hit firehose in
+characters. Item-count caps (≤1 method, ≤3 hits) are a coarse proxy; the char test
+is the real guard.
+
 ## The gap
 
 The instance has action-shape (compass, per-call) and content recall (FTS, facts).
@@ -85,6 +94,23 @@ In `hooks/user-prompt-submit.js`:
 4. Auto-distill — deferred, later, promote-gated.
 Tests green at each step (179: 117 smoke + 48 regression + 14 integration).
 Next: adversarial review, then ship v0.3.0 behind a review-before-merge PR.
+
+## Known limitations (accepted, soft by design)
+Surfaced by the adversarial review; kept as heuristics rather than over-engineered:
+- **Relevance is literal token overlap.** Synonyms miss (`cycle the API key` won't
+  find `shape:rotate-credential`); a shared common noun can over-fire (`review-parser`
+  for a "rewrite the parser" goal). Errs toward *less* surfacing, never a cardinal-rule
+  violation. Semantic similarity is a future option, not a v0.3 need.
+- **Trivial gate** catches acks, verb-led acks, and short identifier-less prompts.
+  Conversational chatter >4 words (`thanks, that makes sense`) still passes the gate
+  and is caught downstream by the relevance filter, not the gate itself.
+- **Per-criterion progress is "mentioned", not "done"** — token overlap can't read
+  negation or completion, and assesses only the newest ~100 non-meta session insights.
+  Rendered as `[~] (related: #id)` so it never reads as a verdict; over-reports
+  "unfinished" (the safe direction) past the cap.
+- **`goals` table is unscrubbed** (`goal`/`why`/`acceptance_criteria` persisted raw,
+  read back into context). Pre-existing, not a Stage-2 regression — flagged for a
+  follow-up that routes the three fields through `secrets.scrub`.
 
 ## Preserve
 Quality over volume · fail-open everywhere · never per-tool · readable over clever.
