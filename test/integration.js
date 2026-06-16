@@ -199,6 +199,52 @@ test('PostToolUse: read-only tool (Read) → {} and no chronicle entry', () => {
   assert.strictEqual(after, before, 'read-only tools write nothing');
 });
 
+// ── scrub: the one-shot redact-sweep against already-leaked rows ─────────────
+
+test('redact-sweep: scrubs a pre-existing leaked row from insights + compass_log + FTS', () => {
+  const sid = 'scrub-seed';
+  const SECRET = 'f'.repeat(48);
+  const LEAK = `Authorization: Bearer ${SECRET}`;
+
+  // Seed rows the pre-0.2 way: raw inserts that bypass record()/logCompass()
+  // redaction, simulating credentials already at rest. The insights_ai trigger
+  // indexes the leaked content into FTS, exactly as the real leak did.
+  ch.db().prepare(
+    `INSERT INTO insights (session_id, content, domain, tags, intensity, layer, created_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?)`
+  ).run(sid, `[compass-fire] PAUSE: curl with ${LEAK}`, 'compass-fire', JSON.stringify(['compass-fire']), 0.7, 'reflection', Date.now());
+  ch.db().prepare(
+    `INSERT INTO compass_log (session_id, tool_name, action_summary, classification, occurred_at)
+     VALUES (?, 'Bash', ?, 'PAUSE', ?)`
+  ).run(sid, `Bash: curl with ${LEAK}`, Date.now());
+  // pending_confirmations was the third write site the sweep originally skipped.
+  ch.db().prepare(
+    `INSERT INTO pending_confirmations (token, session_id, action_hash, action_summary, reason, status, created_at, expires_at)
+     VALUES (?, ?, ?, ?, ?, 'pending', ?, ?)`
+  ).run('seedtoken123456', sid, 'deadbeef', `Bash: curl with ${LEAK}`, `leaked ${LEAK}`, Date.now(), Date.now() + 600000);
+
+  // Confirm the secret is searchable BEFORE the sweep (the leak is real).
+  const before = ch.recall({ query: SECRET, topK: 10, include_meta: true });
+  assert.ok(before.some(h => h.content.includes(SECRET)), 'secret should be present + FTS-searchable pre-sweep');
+
+  // Close our connection so the child sweep owns the db cleanly, then run it.
+  ch.close();
+  const res = spawnSync('node', [path.join(__dirname, '..', 'scripts', 'redact-sweep.js'), '--data-dir', tmpDir], { encoding: 'utf8' });
+  assert.strictEqual(res.status, 0, `sweep exited ${res.status}: ${res.stderr}`);
+  assert.ok(/redacted 1/.test(res.stdout), 'sweep should report redacting the insight');
+
+  // Reopen (lazy) and verify the leak is gone from rows AND from FTS.
+  const insightRow = ch.db().prepare('SELECT content FROM insights WHERE session_id = ?').get(sid);
+  assert.ok(!insightRow.content.includes(SECRET), 'insight content scrubbed');
+  assert.ok(/\[REDACTED:bearer:/.test(insightRow.content), 'insight carries the fingerprint');
+  const compassRow = ch.db().prepare('SELECT action_summary FROM compass_log WHERE session_id = ?').get(sid);
+  assert.ok(!compassRow.action_summary.includes(SECRET), 'compass_log scrubbed');
+  const pendingRow = ch.db().prepare('SELECT action_summary, reason FROM pending_confirmations WHERE session_id = ?').get(sid);
+  assert.ok(!pendingRow.action_summary.includes(SECRET) && !String(pendingRow.reason).includes(SECRET), 'pending_confirmations scrubbed by sweep');
+  const after = ch.recall({ query: SECRET, topK: 10, include_meta: true });
+  assert.ok(!after.some(h => h.content.includes(SECRET)), 'secret no longer FTS-searchable post-sweep');
+});
+
 // ── Summary ─────────────────────────────────────────────────────────────────
 
 console.log(`\n${pass} passed, ${fail} failed`);
