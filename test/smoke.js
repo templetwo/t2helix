@@ -672,9 +672,11 @@ test('recordCompassFire: writes a chronicle entry tagged compass-fire + classifi
     rule_matched: 'rm-rf-wildcard',
     reason: 'wildcard rm under /tmp'
   });
-  const hits = ch.recall({ query: 'rm-rf-wildcard', topK: 10 });
+  // compass-fire is a META domain as of v0.2 — excluded from default recall, so
+  // query it with include_meta:true (same contract as session-action).
+  const hits = ch.recall({ query: 'rm-rf-wildcard', topK: 10, include_meta: true });
   const hit = hits.find(h => h.tags && h.tags.includes('compass-fire'));
-  assert.ok(hit, 'should find compass-fire entry via recall');
+  assert.ok(hit, 'should find compass-fire entry via recall (include_meta)');
   assert.ok(hit.tags.includes('classification:WITNESS'), 'tags must include classification');
   assert.ok(hit.tags.includes('rule:rm-rf-wildcard'), 'tags must include rule:<id> when rule matched');
   assert.ok(hit.tags.some(t => t.startsWith('action:')), 'tags must include action:<hash>');
@@ -715,9 +717,15 @@ test('recordCompassFire: PAUSE classification round-trips', () => {
     session_id: sid, action_summary: action, classification: 'PAUSE',
     rule_matched: 'credential-paste', reason: 'private key in command'
   });
-  const hits = ch.recall({ query: 'OPENSSH credential', topK: 10 });
+  // The PEM block is redacted on write (v0.2), so it is NOT searchable by the
+  // secret text — query surviving content (the reason). include_meta because
+  // compass-fire is now a META domain.
+  const hits = ch.recall({ query: 'private key command', topK: 10, include_meta: true });
   const hit = hits.find(h => h.tags && h.tags.includes('classification:PAUSE'));
   assert.ok(hit, 'should find the PAUSE compass-fire');
+  // And the secret itself must not be in the stored content.
+  assert.ok(!/BEGIN OPENSSH PRIVATE KEY/.test(hit.content), 'PEM block must be redacted out of the stored entry');
+  assert.ok(/\[REDACTED:private-key:/.test(hit.content), 'redaction fingerprint should be present');
 });
 
 test('recordCompassFire: missing rule_matched still writes (rule tag is conditional)', () => {
@@ -729,7 +737,7 @@ test('recordCompassFire: missing rule_matched still writes (rule tag is conditio
     rule_matched: null,
     reason: 'memory-escalated, no upstream rule'
   });
-  const hits = ch.recall({ query: 'memory-escalated weird thing', topK: 10 });
+  const hits = ch.recall({ query: 'memory-escalated weird thing', topK: 10, include_meta: true });
   const hit = hits.find(h => h.tags && h.tags.includes('compass-fire'));
   assert.ok(hit, 'should still find the entry');
   assert.ok(!hit.tags.some(t => t.startsWith('rule:')), 'no rule tag when rule_matched is null');
@@ -821,6 +829,272 @@ test('e2e helix loop: past failures → escalation → compass-fire → outcome 
   assert.ok(chain.length >= 2, `chain must include both compass-fire + PostToolUse, got ${chain.length}`);
   assert.ok(chain.some(h => h.tags && h.tags.includes('compass-fire')), 'chain must include compass-fire');
   assert.ok(chain.some(h => h.tags && h.tags.includes('outcome:success')), 'chain must include outcome:success from post-override PostToolUse');
+});
+
+// ============================================================================
+// v0.2: secret redaction (lib/secrets.js) + write-path + recall-surface hygiene
+// ============================================================================
+
+const secrets = require('../lib/secrets');
+
+// A 64-hex token shaped like the Sovereign Bridge bearer (NOT a real secret).
+const FAKE_BEARER = 'a1b2c3d4e5f60718293a4b5c6d7e8f90a1b2c3d4e5f60718293a4b5c6d7e8f90';
+
+test('redact: bearer token is fingerprinted, scheme preserved', () => {
+  const out = secrets.redactSecrets(`curl -H "Authorization: Bearer ${FAKE_BEARER}" https://x`);
+  assert.ok(!out.includes(FAKE_BEARER), 'raw token must be gone');
+  assert.ok(/Authorization: Bearer \[REDACTED:bearer:[0-9a-f]{8}\]/.test(out), 'scheme kept, value fingerprinted');
+});
+
+test('redact: sk-/ghp_/AKIA prefixed tokens are redacted', () => {
+  assert.ok(/\[REDACTED:sk-key:/.test(secrets.redactSecrets('sk-' + 'A'.repeat(40))), 'sk- key');
+  assert.ok(/\[REDACTED:github-token:/.test(secrets.redactSecrets('ghp_' + 'b'.repeat(36))), 'github token');
+  assert.ok(/\[REDACTED:aws-akid:/.test(secrets.redactSecrets('AKIA' + 'ABCDEFGH12345678')), 'aws akid');
+});
+
+test('redact: PEM private key block is redacted', () => {
+  const pem = '-----BEGIN OPENSSH PRIVATE KEY-----\nabc123def456\n-----END OPENSSH PRIVATE KEY-----';
+  const out = secrets.redactSecrets(`echo "${pem}"`);
+  assert.ok(!/BEGIN OPENSSH PRIVATE KEY/.test(out), 'PEM header gone');
+  assert.ok(/\[REDACTED:private-key:/.test(out), 'fingerprinted');
+});
+
+test('redact: password/token assignment masks value, keeps label', () => {
+  const out = secrets.redactSecrets('export DB_PASSWORD=sup3rSecretValue12345');
+  assert.ok(!out.includes('sup3rSecretValue12345'), 'value gone');
+  assert.ok(/PASSWORD=\[REDACTED:secret-assign:/.test(out), 'label kept, value fingerprinted');
+});
+
+test('redact: does NOT over-redact a bare 40-char git SHA', () => {
+  const sha = 'a'.repeat(40);
+  const prose = `the fix landed in commit ${sha} on main`;
+  assert.strictEqual(secrets.redactSecrets(prose), prose, 'a bare SHA in prose must be untouched');
+});
+
+test('redact: normal content passes through unchanged; null is null', () => {
+  assert.strictEqual(secrets.redactSecrets('just a normal insight about attention'), 'just a normal insight about attention');
+  assert.strictEqual(secrets.redactSecrets(null), null);
+});
+
+test('redact: same secret → same fingerprint (linkable)', () => {
+  const a = secrets.redactSecrets(`Bearer ${FAKE_BEARER}`);
+  const b = secrets.redactSecrets(`token: ${FAKE_BEARER}`);
+  const fpA = a.match(/:([0-9a-f]{8})\]/)[1];
+  const fpB = b.match(/:([0-9a-f]{8})\]/)[1];
+  assert.strictEqual(fpA, fpB, 'fingerprint identifies the value across rows');
+});
+
+test('compass: shared detection still classifies credentials as PAUSE', () => {
+  const C = cmd => compass.classify({ tool_name: 'Bash', tool_input: { command: cmd } });
+  assert.strictEqual(C(`curl -H "Authorization: Bearer ${FAKE_BEARER}" x`).classification, 'PAUSE', 'bearer header');
+  assert.strictEqual(C('echo sk-' + 'A'.repeat(40)).classification, 'PAUSE', 'sk- key');
+  assert.strictEqual(C('git remote set-url o https://ghp_' + 'b'.repeat(36) + '@github.com/x').classification, 'PAUSE', 'github token');
+  assert.strictEqual(C('export AWS_SECRET_ACCESS_KEY=AKIAEXAMPLE').classification, 'PAUSE', 'aws_secret name (coarse detect)');
+  assert.strictEqual(C('credential-paste rule id is not itself a secret').classification, 'OPEN', 'no false PAUSE on the word credential');
+  assert.strictEqual(C('git log --oneline -5').classification, 'OPEN', 'plain command stays OPEN');
+});
+
+test('write-path: record() redacts a credential embedded in content', () => {
+  const sid = 'redact-write-' + Date.now();
+  const r = ch.record({ session_id: sid, content: `ran: curl -H "Authorization: Bearer ${FAKE_BEARER}"`, domain: 'misc' });
+  assert.ok(r.id, 'record returns an id');
+  const hits = ch.recall({ query: 'ran curl Authorization', topK: 5, include_meta: true });
+  const hit = hits.find(h => h.id === r.id);
+  assert.ok(hit, 'should recall the row');
+  assert.ok(!hit.content.includes(FAKE_BEARER), 'stored content must not contain the raw token');
+  assert.ok(/\[REDACTED:bearer:/.test(hit.content), 'stored content carries the fingerprint');
+});
+
+test('write-path: logCompass() redacts action_summary and reason', () => {
+  const sid = 'redact-compass-' + Date.now();
+  ch.logCompass({
+    session_id: sid, tool_name: 'Bash',
+    action_summary: `Bash: curl -H "Authorization: Bearer ${FAKE_BEARER}"`,
+    classification: 'PAUSE', rule_matched: 'credential-paste',
+    // Bare hex with no credential label is deliberately NOT redacted (same reason
+    // git SHAs aren't), so label it to prove the reason column is also scrubbed.
+    reason: `session token: ${FAKE_BEARER}`
+  });
+  const row = ch.getCompassHistory({ limit: 50 }).find(e => e.session_id === sid);
+  assert.ok(row, 'compass_log row present');
+  assert.ok(!row.action_summary.includes(FAKE_BEARER), 'action_summary redacted');
+  assert.ok(!row.reason.includes(FAKE_BEARER), 'reason redacted');
+});
+
+test('surface: compass-fire is excluded from default recall, present with include_meta', () => {
+  const sid = 'cf-meta-' + Date.now();
+  const marker = 'uniquemarker' + Date.now();
+  ch.recordCompassFire({
+    session_id: sid, action_summary: `Bash: ${marker} thing`,
+    classification: 'PAUSE', rule_matched: 'credential-paste', reason: 'x'
+  });
+  const def = ch.recall({ query: marker, topK: 10 });
+  assert.ok(!def.some(h => h.tags && h.tags.includes('compass-fire')), 'default recall must NOT surface compass-fire');
+  const meta = ch.recall({ query: marker, topK: 10, include_meta: true });
+  assert.ok(meta.some(h => h.tags && h.tags.includes('compass-fire')), 'include_meta surfaces compass-fire');
+});
+
+test('surface: getState.recent_insights excludes compass-fire', () => {
+  const sid = 'cf-getstate-' + Date.now();
+  ch.recordCompassFire({
+    session_id: sid, action_summary: 'Bash: getstate-cf-probe',
+    classification: 'PAUSE', rule_matched: 'credential-paste', reason: 'x'
+  });
+  const s = ch.getState(sid);
+  assert.ok(!s.recent_insights.some(i => i.domain === 'compass-fire'), 'getState must not include compass-fire rows');
+});
+
+test('fail-safe: redact-or-drop — record() drops rather than persist raw on redaction throw', () => {
+  const sid = 'failsafe-' + Date.now();
+  const marker = 'failsafemarker' + Date.now();
+  const orig = secrets.scrub;
+  secrets.scrub = () => { throw new Error('boom'); };
+  try {
+    const r = ch.record({ session_id: sid, content: `secret-bearing ${marker}`, domain: 'misc' });
+    assert.strictEqual(r.id, null, 'record must return null id when dropped');
+    assert.strictEqual(r.dropped, true, 'record must flag dropped');
+  } finally {
+    secrets.scrub = orig;
+  }
+  // The dropped row must not be in the db (search with the real redactor restored).
+  const hits = ch.recall({ query: marker, topK: 10, include_meta: true });
+  assert.ok(!hits.some(h => h.content.includes(marker)), 'dropped content must never be persisted');
+});
+
+test('retention: prune() bounds compass_log (old+overflow) and pending_confirmations', () => {
+  const sid = 'prune-' + Date.now();
+  const now = Date.now();
+  const day = 86400000;
+  const insertLog = ch.db().prepare(`INSERT INTO compass_log (session_id, tool_name, action_summary, classification, occurred_at) VALUES (?, 'Bash', ?, 'OPEN', ?)`);
+  insertLog.run(sid, 'old-1', now - 40 * day);
+  insertLog.run(sid, 'old-2', now - 41 * day);
+  insertLog.run(sid, 'old-3', now - 42 * day);
+  insertLog.run(sid, 'recent-1', now - 1 * day);
+  insertLog.run(sid, 'recent-2', now - 2 * day);
+
+  // Seed pending_confirmations: one used, one expired, one live.
+  ch.createPendingConfirmation({ session_id: sid, action_summary: 'live one', ttl_ms: 10 * 60000 });
+  const used = ch.createPendingConfirmation({ session_id: sid, action_summary: 'used one' });
+  ch.approveConfirmation({ token: used.token });
+  ch.consumeApproval(ch.findApproval({ session_id: sid, action_summary: 'used one' }).id);
+  const expired = ch.createPendingConfirmation({ session_id: sid, action_summary: 'expired one', ttl_ms: -1000 });
+
+  const before = ch.getCompassHistory({ limit: 100 }).filter(e => e.session_id === sid).length;
+  assert.strictEqual(before, 5, 'seeded 5 compass_log rows');
+
+  const res = ch.prune({ now, retainDays: 30, retainRows: 2 });
+  assert.strictEqual(res.compass_log_deleted, 3, 'the 3 old+overflow rows deleted');
+  const after = ch.getCompassHistory({ limit: 100 }).filter(e => e.session_id === sid);
+  assert.strictEqual(after.length, 2, 'the 2 recent rows kept');
+  assert.ok(after.every(e => /recent/.test(e.action_summary)), 'only recent rows survive');
+
+  const pend = ch.listPendingConfirmations({ session_id: sid, limit: 50 });
+  assert.ok(!pend.some(p => p.action_summary === 'used one'), 'used pending pruned');
+  assert.ok(pend.some(p => p.action_summary === 'live one'), 'live pending kept');
+});
+
+// ============================================================================
+// v0.2 security-review hardening: close the detector⊃redactor gap, add token
+// formats, fix the tokenizer false-positive, cover pending_confirmations.
+// ============================================================================
+
+const R = secrets.redactSecrets;
+
+test('redact: JSON-embedded secret ("token":"...") is masked (the critical miss)', () => {
+  const v = 'aBcD1234EfGh5678IjKl9012MnOp';
+  const out = R(`{"url":"https://x","token":"${v}"}`);
+  assert.ok(!out.includes(v), 'JSON token value must be masked');
+  assert.ok(/\[REDACTED:secret-assign:/.test(out), 'fingerprinted');
+  assert.ok(secrets.looksLikeSecret(`{"password":"${v}"}`), 'JSON secret is also detected (PAUSE)');
+});
+
+test('redact: URL basic-auth password (scheme://user:pass@host) is masked', () => {
+  const out = R('git clone https://alice:s3cr3tPassw0rd123@github.com/org/repo.git');
+  assert.ok(!out.includes('s3cr3tPassw0rd123'), 'url password masked');
+  assert.ok(/\[REDACTED:url-auth:/.test(out));
+  assert.ok(!R('postgres://admin:supersecretpassword123@db:5432/x').includes('supersecretpassword123'), 'db url masked');
+});
+
+test('redact: credential value with special chars (@!#$) is masked', () => {
+  const out = R('password=P@ssw0rd!Sup3r#SecretValue');
+  assert.ok(!out.includes('P@ssw0rd!Sup3r#SecretValue'), 'special-char value masked');
+  assert.ok(secrets.looksLikeSecret('password=P@ssw0rd!Sup3r#SecretValue'));
+});
+
+test('redact: cloud/SaaS token formats (Slack/Stripe/Google/npm/SendGrid)', () => {
+  // Tokens are assembled from fragments so the prefix is never contiguous in
+  // source — GitHub push-protection flags real-looking key literals, and these
+  // are fakes. The runtime value still matches the redactor patterns.
+  const cases = {
+    'slack-token': 'xox' + 'b-2488392019-2489531829-aBcDeFgHiJkLmNoPqRsTuVwX',
+    'stripe-key': 'sk_' + 'live_51H8aBcDeFgHiJkLmNoPqRsTuVwXyZ0123456789',
+    'google-key': 'AIz' + 'aSyD1234567890abcdefghijklmnopqrstuvwx',
+    'npm-token': 'npm' + '_AbCdEfGhIjKlMnOpQrStUvWxYz0123456789',
+    'sendgrid-key': 'SG' + '.aBcDeFgHiJkLmNoPqRs.tUvWxYz0123456789aBcDeFgHiJkLmNoPqRsTuVwXyZ'
+  };
+  for (const [kind, tok] of Object.entries(cases)) {
+    const out = R(`export KEY=${tok}`);
+    assert.ok(!out.includes(tok), `${kind} must be masked (got: ${out})`);
+    assert.ok(secrets.looksLikeSecret(tok), `${kind} must be detected`);
+  }
+});
+
+test('redact: short bearer token (8-15 chars) in Authorization header is masked', () => {
+  const out = R('curl -H "Authorization: Bearer abc123def456" https://api.x');
+  assert.ok(!/Bearer abc123def456/.test(out), 'short bearer must be masked, not just detected');
+  assert.ok(secrets.looksLikeSecret('Authorization: Bearer abc123def456'));
+});
+
+test('redact: bearer fragment truncated at the … boundary is masked', () => {
+  const out = R('Bash: ' + 'x'.repeat(180) + 'Bearer AbCdEfGhIj…');
+  assert.ok(!/Bearer AbCdEfGhIj…/.test(out), 'truncated bearer prefix must be masked');
+});
+
+test('redact: tokenizer/tokens are NOT over-redacted (false-positive fix)', () => {
+  const prose = 'Switched tokenizer = tiktoken_cl100k_base for the GPT-4 comparison runs';
+  assert.strictEqual(R(prose), prose, 'tokenizer assignment must pass through untouched');
+  assert.strictEqual(R('tokens = the_quick_brown_fox_jumped_over_lazy'), 'tokens = the_quick_brown_fox_jumped_over_lazy');
+  assert.ok(!secrets.looksLikeSecret(prose), 'tokenizer prose is not classified a secret');
+});
+
+test('scrub: fixed-point backstop — output never holds a maskable secret', () => {
+  const v = 'aBcD1234EfGh5678IjKl';
+  const out = secrets.scrub(`token: ${v}`);
+  assert.strictEqual(secrets.redactSecrets(out), out, 'scrub output is a redactor fixed point');
+  assert.ok(!out.includes(v));
+});
+
+test('detection == redaction coverage: anything detected is also maskable', () => {
+  const samples = [
+    'Authorization: Bearer abc123def456', '{"token":"aBcD1234EfGh5678"}',
+    'https://u:p4ssword12345@h/x', 'export KEY=sk_live_51H8aBcDeFgHiJkLmNoPq',
+    'password=P@ss!w0rd#longvalue'
+  ];
+  for (const s of samples) {
+    if (secrets.looksLikeSecret(s)) {
+      assert.notStrictEqual(secrets.redactSecrets(s), s, `detected but not maskable: ${s}`);
+    }
+  }
+});
+
+test('write-path: createPendingConfirmation redacts stored summary + reason, keeps hash', () => {
+  const sid = 'pending-redact-' + Date.now();
+  const tok = 'a1b2c3d4e5f60718293a4b5c6d7e8f90a1b2c3d4e5f6';
+  const summary = `Bash: curl -H "Authorization: Bearer ${tok}"`;
+  const p = ch.createPendingConfirmation({ session_id: sid, action_summary: summary, rule_matched: 'credential-paste', reason: `token: ${tok}` });
+  // The hash must be over the RAW summary so the retry-side findApproval matches.
+  assert.strictEqual(p.action_hash, ch.actionHash(summary), 'hash is over the raw summary');
+  const row = ch.listPendingConfirmations({ session_id: sid })[0];
+  assert.ok(!row.action_summary.includes(tok), 'stored summary must be scrubbed');
+  assert.ok(!String(row.reason).includes(tok), 'stored reason must be scrubbed');
+});
+
+test('compass: pattern_source resolves to a RegExp (fail-loud guard exists)', () => {
+  // credential-paste classifies PAUSE → proves DETECTION_REGEX resolved, not a
+  // silent OPEN downgrade.
+  const r = compass.classify({ tool_name: 'Bash', tool_input: { command: 'curl -H "Authorization: Bearer abc123def4567890"' } });
+  assert.strictEqual(r.classification, 'PAUSE');
+  assert.strictEqual(r.rule_id, 'credential-paste');
 });
 
 ch.close();
