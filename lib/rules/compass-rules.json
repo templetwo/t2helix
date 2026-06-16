@@ -54,8 +54,8 @@
       "id": "credential-paste",
       "classification": "PAUSE",
       "tool": "Bash",
-      "pattern": "(?i)(?:aws_secret|api_key|bearer\\s+[a-f0-9]{20,}|-----BEGIN\\s+(?:RSA|OPENSSH|PGP)\\s+PRIVATE)",
-      "reason": "Possible credential in command. Confirm this isn't being logged or written to disk in cleartext."
+      "pattern_source": "secrets",
+      "reason": "Possible credential in command. It is redacted on the way into the chronicle (v0.2), but confirm it isn't being written elsewhere in cleartext."
     }
   ]
 }
