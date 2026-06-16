@@ -94,13 +94,17 @@ const TOOLS = [
   },
   {
     name: 'set_goal',
-    description: 'Define or update the current session goal. Anchors subsequent work.',
+    description: 'Define or update the current session goal. Anchors subsequent work. Optionally pass acceptance_criteria (concrete done-signals) to make the goal boundary-active: the Stop synthesis then tracks per-criterion progress and flags what is left unfinished. If you set a goal without criteria, the response offers a lightweight decomposition you may follow up on (non-blocking).',
     inputSchema: {
       type: 'object',
       properties: {
         goal: { type: 'string' },
         why: { type: 'string' },
-        acceptance_criteria: { type: 'array', items: { type: 'string' } }
+        acceptance_criteria: {
+          type: 'array',
+          items: { type: 'string' },
+          description: 'Concrete, checkable done-signals that bound the goal (e.g. ["tests green", "PR opened", "deployed"]). 2-4 is plenty. Surfaced in the Stop synthesis with a soft per-criterion progress marker.'
+        }
       },
       required: ['goal']
     }
@@ -271,13 +275,16 @@ function handleToolCall(name, args) {
       return textContent({ ok: true, id: r.id, shape: args.shape });
     }
     case 'set_goal': {
-      ch.setGoal({
+      // Surface the chronicle result verbatim: it carries acceptance_criteria_count
+      // and, when no boundary is defined, a lightweight (non-blocking) offer to
+      // decompose the goal into acceptance_criteria (v0.3 step 3).
+      const r = ch.setGoal({
         session_id: sid,
         goal: args.goal,
         why: args.why,
         acceptance_criteria: args.acceptance_criteria
       });
-      return textContent({ ok: true });
+      return textContent(r);
     }
     case 'open_thread': {
       const r = ch.openThread({ question: args.question, domain: args.domain, context: args.context });

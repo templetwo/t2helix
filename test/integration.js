@@ -221,6 +221,31 @@ test('UserPromptSubmit: injects a relevant method; trivial prompt yields no gene
   assert.ok(!/Related from chronicle:/.test(ctx2), 'generic recall suppressed on a trivial prompt');
 });
 
+// ── Stop: boundary-active goal → per-criterion progress (v0.3 step 3) ────────
+
+test('Stop synthesis: per-criterion progress with a soft unfinished marker', () => {
+  const sid = 'stop-goal-' + Date.now();
+  ch.setGoal({
+    session_id: sid,
+    goal: 'wire the boundary-active goal',
+    acceptance_criteria: ['parser tokenization fixed', 'PR opened for review']
+  });
+  // One criterion has in-session evidence; the other does not.
+  ch.record({ session_id: sid, content: 'fixed the parser tokenization edge case', domain: 't2helix' });
+
+  const r = runHook('stop.js', { session_id: sid });
+  assert.strictEqual(r.code, 0, `stop exited ${r.code}: ${r.stderr}`);
+  assert.deepStrictEqual(r.out, {}, 'stop fails-open with empty {}');
+
+  const synth = ch.db()
+    .prepare(`SELECT content FROM insights WHERE session_id = ? AND domain = 'session-synthesis' ORDER BY created_at DESC LIMIT 1`)
+    .get(sid);
+  assert.ok(synth, 'stop wrote a session-synthesis record');
+  assert.ok(/Acceptance criteria \(1\/2 with recorded evidence\):/.test(synth.content), 'count header present');
+  assert.ok(/\[x\] parser tokenization fixed/.test(synth.content), 'evidenced criterion marked done');
+  assert.ok(/\[ \] PR opened for review \(unfinished/.test(synth.content), 'evidence-less criterion marked unfinished');
+});
+
 // ── scrub: the one-shot redact-sweep against already-leaked rows ─────────────
 
 test('redact-sweep: scrubs a pre-existing leaked row from insights + compass_log + FTS', () => {

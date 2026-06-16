@@ -284,6 +284,18 @@ test('set_goal: preserves acceptance_criteria array', async (client) => {
   assert.deepStrictEqual(state.goal.acceptance_criteria, ['crit-a', 'crit-b', 'crit-c']);
 });
 
+test('set_goal: returns a non-blocking decomposition offer when no criteria, count when present', async (client) => {
+  const goal = 'boundary-offer-' + Date.now();
+  const offered = await call(client, 'set_goal', { goal });
+  assert.strictEqual(offered.ok, true);
+  assert.strictEqual(offered.acceptance_criteria_count, 0);
+  assert.ok(typeof offered.decomposition_hint === 'string', 'offers a decomposition hint with no criteria');
+
+  const bounded = await call(client, 'set_goal', { goal, acceptance_criteria: ['x', 'y'] });
+  assert.strictEqual(bounded.acceptance_criteria_count, 2);
+  assert.ok(!('decomposition_hint' in bounded), 'no hint once a boundary is defined');
+});
+
 test('set_goal: archives prior goal as an insight when goal changes', async (client) => {
   const first = 'first goal text ' + Date.now();
   const second = 'second goal text ' + Date.now();

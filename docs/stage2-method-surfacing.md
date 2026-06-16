@@ -1,7 +1,7 @@
 # T2Helix v0.3 — Stage 2: Method-Surfacing
 
 Revised spec (web-seat first draft + the MacBook seat's lived review, 2026-06-16).
-Builds on v0.2.0 (the clean surface). Status: building.
+Builds on v0.2.0 (the clean surface). Status: feature-complete (steps 1-3); adversarial review next, then ship.
 
 ## Cardinal rule (non-negotiable)
 
@@ -57,18 +57,34 @@ In `hooks/user-prompt-submit.js`:
   strong method may still show).
 - Cap total: 1 method + ≤3 insights, deduped, smaller than v0.2. Measure before/after.
 
-### Boundary-active goal (step 3)
-- `set_goal` → offer a **lightweight** decomposition into `acceptance_criteria`
-  (never a blocking interrogation).
-- Stop → per-criterion progress note in the synthesis; soft "unfinished" marker.
+### Boundary-active goal (step 3) — built
+- `set_goal` → when the goal has no `acceptance_criteria`, the return carries a
+  **lightweight, non-blocking** `decomposition_hint` (the model may act on it or
+  ignore it; the goal is already committed). With criteria, it returns
+  `acceptance_criteria_count` and no hint. The model is the decomposer — the data
+  layer only makes the boundary visible. Surfaced through the `set_goal` MCP result.
+- **Boundary lifecycle:** the criteria belong to *this* goal. Explicit criteria
+  win; an idempotent re-set (same goal text, no criteria) preserves them; a
+  genuinely new goal starts unbounded so stale criteria don't bleed across and the
+  offer can fire. The prior goal + its criteria are archived first, so nothing is
+  lost. (This corrected the pre-0.3 `COALESCE` that let old criteria stick to a new
+  goal — discovered via a shared-session regression.)
+- Stop → soft per-criterion progress note in the synthesis (`lib/goal-progress.js`,
+  pure): token overlap against THIS session's own non-meta insights, explicitly
+  labelled, never a verdict. Each criterion gets `[x] … (evidence #id)` or
+  `[ ] … (unfinished, no recorded evidence)`, plus a soft tally of open criteria.
+- **Per-prompt injection is unchanged** — criteria surface only at the two
+  boundaries (goal-set, session-end), never added to the recall block, so the
+  cardinal rule (volume down) holds.
 - Never per-tool. PostToolUse stays record-only.
 
 ## Sequence
-1. Method store + `record_method` (smallest first). ← building
-2. Surfacing + de-noise + gate (the cardinal-rule test; measure volume).
-3. Boundary-active goal.
+1. Method store + `record_method` (smallest first). ✓ done
+2. Surfacing + de-noise + gate (the cardinal-rule test; measure volume). ✓ done
+3. Boundary-active goal. ✓ done
 4. Auto-distill — deferred, later, promote-gated.
-Tests green at each step. Ship v0.3.0.
+Tests green at each step (179: 117 smoke + 48 regression + 14 integration).
+Next: adversarial review, then ship v0.3.0 behind a review-before-merge PR.
 
 ## Preserve
 Quality over volume · fail-open everywhere · never per-tool · readable over clever.

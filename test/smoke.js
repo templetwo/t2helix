@@ -1192,6 +1192,76 @@ test('surface.buildContext: method leads the insights section; goal shown', () =
   assert.ok(/Current goal:/.test(ctx));
 });
 
+// ============================================================================
+// v0.3 Stage 2 step 3: boundary-active goal — set_goal decomposition offer,
+// session-scoped insight read, and the soft per-criterion progress assessment.
+// ============================================================================
+const goalProgress = require('../lib/goal-progress');
+
+test('goal-progress.assessCriteria: token overlap marks addressed vs unfinished', () => {
+  const insights = [
+    { id: 11, content: 'fixed the parser tokenization edge case in lib/secrets' },
+    { id: 12, content: 'ran the full smoke suite, all green' }
+  ];
+  const criteria = ['parser tokenization fixed', 'PR opened for review'];
+  const assessed = goalProgress.assessCriteria({ criteria, insights });
+  assert.strictEqual(assessed.length, 2);
+  assert.deepStrictEqual(
+    { a: assessed[0].addressed, id: assessed[0].evidenceId },
+    { a: true, id: 11 },
+    'criterion with shared tokens is addressed, points at the evidence id'
+  );
+  assert.strictEqual(assessed[1].addressed, false, 'criterion with no evidence is unfinished');
+  assert.strictEqual(assessed[1].evidenceId, null);
+});
+
+test('goal-progress: single-token criterion needs only that token; empty list → []', () => {
+  const insights = [{ id: 5, content: 'deployed to HQ and verified heartbeat' }];
+  const assessed = goalProgress.assessCriteria({ criteria: ['deployed'], insights });
+  assert.strictEqual(assessed[0].addressed, true, 'one-token criterion matches on that token alone');
+  assert.deepStrictEqual(goalProgress.assessCriteria({ criteria: [], insights }), []);
+  assert.deepStrictEqual(goalProgress.formatCriteriaProgress([]), [], 'no criteria → no lines');
+});
+
+test('goal-progress.formatCriteriaProgress: soft markers, count header, unfinished tally', () => {
+  const lines = goalProgress.formatCriteriaProgress([
+    { text: 'tests green', addressed: true, evidenceId: 7 },
+    { text: 'PR opened', addressed: false, evidenceId: null }
+  ]);
+  const blob = lines.join('\n');
+  assert.ok(/Acceptance criteria \(1\/2 with recorded evidence\):/.test(blob), 'count header');
+  assert.ok(/\[x\] tests green \(evidence #7\)/.test(blob), 'addressed line cites evidence');
+  assert.ok(/\[ \] PR opened \(unfinished, no recorded evidence\)/.test(blob), 'unfinished line');
+  assert.ok(/soft marker: 1 criterion/.test(blob), 'soft tally of open criteria');
+});
+
+test('chronicle.getSessionInsights: session-scoped, excludes meta domains', () => {
+  const sid = 'gsi-' + Date.now();
+  ch.record({ session_id: sid, content: 'real work insight for this session', domain: 't2helix' });
+  ch.record({ session_id: sid, content: '[compass-fire] noise', domain: 'compass-fire', layer: 'reflection' });
+  ch.record({ session_id: 'gsi-other', content: 'belongs to another session', domain: 't2helix' });
+  const rows = ch.getSessionInsights(sid);
+  assert.ok(rows.some(r => /real work insight/.test(r.content)), 'returns this session\'s work insight');
+  assert.ok(!rows.some(r => r.domain === 'compass-fire'), 'excludes meta domains');
+  assert.ok(!rows.some(r => /another session/.test(r.content)), 'scoped to the session_id');
+});
+
+test('chronicle.setGoal: offers decomposition when no criteria; preserves boundary on re-set', () => {
+  const sid = 'goal-offer-' + Date.now();
+  const r0 = ch.setGoal({ session_id: sid, goal: 'do the thing' });
+  assert.strictEqual(r0.acceptance_criteria_count, 0);
+  assert.ok(typeof r0.decomposition_hint === 'string' && /acceptance_criteria/.test(r0.decomposition_hint), 'offers a lightweight decomposition');
+
+  const r1 = ch.setGoal({ session_id: sid, goal: 'do the thing', acceptance_criteria: ['a', 'b'] });
+  assert.strictEqual(r1.acceptance_criteria_count, 2);
+  assert.ok(!('decomposition_hint' in r1), 'no offer once a boundary exists');
+
+  // COALESCE preserves criteria when a later set_goal omits them → still no offer.
+  const r2 = ch.setGoal({ session_id: sid, goal: 'do the thing' });
+  assert.strictEqual(r2.acceptance_criteria_count, 2, 'boundary preserved across criteria-less re-set');
+  assert.ok(!('decomposition_hint' in r2));
+});
+
 ch.close();
 
 console.log(`\n${pass} passed, ${fail} failed`);
