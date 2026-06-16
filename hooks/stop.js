@@ -9,7 +9,7 @@
 // recall() genuinely powerful — not just "what have I learned" but "what was
 // I doing in sessions like this one."
 
-const { getState, getCompassHistory, record, readCurrentSession, writeCurrentSession } = require('../lib/chronicle');
+const { getState, getCompassHistory, record, readCurrentSession, writeCurrentSession, prune } = require('../lib/chronicle');
 const { readStdin } = require('../lib/hook-io');
 
 async function main() {
@@ -68,6 +68,15 @@ async function main() {
       intensity: 0.7,
       layer: 'reflection'
     });
+  } catch (_) {
+    // Never block session close
+  }
+
+  // Retention pass — bound the unbounded operational tables (v0.2). Separate
+  // try/catch so a prune failure never costs the synthesis write above, and
+  // vice versa. Fail-open: a skipped prune is harmless.
+  try {
+    prune();
   } catch (_) {
     // Never block session close
   }
