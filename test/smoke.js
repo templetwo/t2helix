@@ -1338,6 +1338,181 @@ test('chronicle.getSessionInsights + assessCriteria: archived-goal rows are NOT 
   assert.ok(assessed.every(a => !a.addressed), 'no phantom evidence — every criterion is open with no real work done');
 });
 
+// ============================================================================
+// v0.4 Stage 3: auto-distill — the pure distiller (lib/distill) + the QUARANTINE
+// candidate store and the explicit promote-to-trusted gate (lib/chronicle).
+// The cardinal invariant under test: a distilled candidate surfaces NOTHING until
+// it is explicitly promoted (the Stop hook is a high-frequency writer — #2382).
+// ============================================================================
+const distill = require('../lib/distill');
+
+// A clean, goal-bounded, all-success session fixture the distiller should accept.
+function s3Fixture() {
+  const goal = { goal: 'wire the stage3 promote gate', acceptance_criteria: ['quarantine works', 'promote works'] };
+  const assessment = [
+    { text: 'quarantine works', addressed: true, evidenceId: 1 },
+    { text: 'promote works', addressed: true, evidenceId: 2 }
+  ];
+  const actions = [
+    { content: 'Bash: npm test', tags: ['post-tool-use', 'bash', 'outcome:success', 'action:aa'], created_at: 2 },
+    { content: 'Edit: lib/chronicle.js', tags: ['post-tool-use', 'edit', 'outcome:success', 'action:bb'], created_at: 1 }
+  ];
+  return { goal, assessment, actions };
+}
+
+test('distill.deriveShape: builds a <verb>-<object>-ish slug; empty for token-less', () => {
+  assert.strictEqual(distill.deriveShape('Wire the Stage 3 promote gate'), 'wire-stage-promote-gate');
+  assert.strictEqual(distill.deriveShape('a to of'), '', 'no significant tokens → empty slug');
+});
+
+test('distill.distillCandidate: returns null without a goal or acceptance_criteria', () => {
+  assert.strictEqual(distill.distillCandidate({ goal: null, assessment: [], actions: [] }), null, 'no goal');
+  assert.strictEqual(distill.distillCandidate({ goal: { goal: 'x' }, assessment: [], actions: [] }), null, 'no criteria');
+});
+
+test('distill.distillCandidate: conservative gates — needs success, no failure, majority addressed', () => {
+  const { goal, assessment, actions } = s3Fixture();
+  // A single failure disqualifies the whole session.
+  const withFail = actions.concat([{ content: 'Bash: boom', tags: ['post-tool-use', 'bash', 'outcome:failure', 'action:cc'], created_at: 3 }]);
+  assert.strictEqual(distill.distillCandidate({ goal, assessment, actions: withFail }), null, 'failure present → null');
+  // No success signal at all → null.
+  const noOutcome = [{ content: 'Read: file', tags: ['post-tool-use', 'read'], created_at: 1 }];
+  assert.strictEqual(distill.distillCandidate({ goal, assessment, actions: noOutcome }), null, 'no success → null');
+  // Minority of criteria addressed → null.
+  const minority = [{ text: 'quarantine works', addressed: false, evidenceId: null }, { text: 'promote works', addressed: false, evidenceId: null }];
+  assert.strictEqual(distill.distillCandidate({ goal, assessment: minority, actions }), null, 'minority addressed → null');
+});
+
+test('distill.distillCandidate: happy path — chronological steps, tool_classes, capped', () => {
+  const { goal, assessment, actions } = s3Fixture();
+  const c = distill.distillCandidate({ goal, assessment, actions });
+  assert.ok(c, 'candidate produced');
+  assert.strictEqual(c.shape, 'wire-stage3-promote-gate', 'shape from goal tokens');
+  assert.strictEqual(c.steps.length, 2);
+  assert.ok(c.steps[0].includes('Edit'), 'steps are chronological (oldest first)');
+  assert.deepStrictEqual(c.tool_classes.slice().sort(), ['bash', 'edit'], 'distinct tool classes from tags');
+  assert.ok(/quarantine works; promote works/.test(c.acceptance), 'acceptance = joined criteria');
+  // Step cap: many actions collapse to MAX_STEPS.
+  const many = Array.from({ length: 20 }, (_, i) => ({ content: `Bash: step ${i}`, tags: ['post-tool-use', 'bash', 'outcome:success'], created_at: i }));
+  const cap = distill.distillCandidate({ goal, assessment, actions: many });
+  assert.ok(cap.steps.length <= 8, 'steps capped at MAX_STEPS (got ' + cap.steps.length + ')');
+});
+
+test('distill.distillCandidate: tolerates a null/sparse element in actions (no crash)', () => {
+  const { goal, assessment, actions } = s3Fixture();
+  const c = distill.distillCandidate({ goal, assessment, actions: actions.concat([null, undefined]) });
+  assert.ok(c, 'still produces a candidate despite null/undefined action elements');
+  assert.deepStrictEqual(c.tool_classes.slice().sort(), ['bash', 'edit'], 'sparse elements skipped, not crashed on');
+});
+
+test('recordMethodCandidate: writes to the quarantine store and scrubs credentials', () => {
+  const sid = 's3-cand-' + Date.now();
+  const w = ch.recordMethodCandidate({ session_id: sid, shape: 'q-shape', steps: [`use Bearer ${FAKE_BEARER}`], acceptance: 'done', tool_classes: ['Bash'] });
+  assert.ok(w.id, 'returns id');
+  const list = ch.listMethodCandidates({ session_id: sid });
+  assert.strictEqual(list.length, 1, 'one pending candidate');
+  assert.strictEqual(list[0].status, 'pending');
+  assert.ok(!list[0].steps.includes(FAKE_BEARER), 'raw credential gone from candidate steps');
+  assert.ok(/\[REDACTED:bearer:/.test(list[0].steps), 'credential fingerprinted in candidate steps');
+  assert.deepStrictEqual(list[0].tool_classes, ['bash'], 'tool_classes parsed + lowercased');
+});
+
+test('recordMethodCandidate: redact-or-drop fail-safe (scrub throw → dropped, never raw)', () => {
+  const sid = 's3-drop-' + Date.now();
+  const orig = secrets.scrub;
+  secrets.scrub = () => { throw new Error('boom'); };
+  let r;
+  try {
+    r = ch.recordMethodCandidate({ session_id: sid, shape: 'x', steps: ['secret stuff'] });
+  } finally {
+    secrets.scrub = orig;
+  }
+  assert.deepStrictEqual({ id: r.id, dropped: r.dropped }, { id: null, dropped: true }, 'dropped on scrub throw');
+  assert.strictEqual(ch.listMethodCandidates({ session_id: sid }).length, 0, 'nothing persisted');
+});
+
+test('Stage 3 QUARANTINE: a candidate never surfaces via recall or surface (the cardinal rule)', () => {
+  const sid = 's3-quar-' + Date.now();
+  const shape = 'quarantined-shape-' + Date.now();
+  ch.recordMethodCandidate({ session_id: sid, shape, steps: ['do the thing'], acceptance: 'done' });
+  // Not in the generic firehose, not reachable by the targeted method lookup
+  // (it is not a 'method' insight at all — it lives in its own table).
+  assert.ok(!ch.recall({ query: shape, topK: 10 }).some(h => h.content.includes(shape)), 'absent from generic recall');
+  assert.strictEqual(ch.recall({ query: shape, topK: 10, include_meta: true, tag: 'method' }).length, 0, 'unreachable via tag:method');
+  // And the surface selector cannot offer it as a method.
+  const sel = surface.selectInjection({ goal: { goal: shape }, prompt: shape, recall: ch.recall });
+  assert.strictEqual(sel.method, null, 'surface.selectInjection surfaces no candidate as a method');
+});
+
+test('promoteMethodCandidate: the gate — candidate → trusted, surfaceable, source:promoted method', () => {
+  const sid = 's3-promote-' + Date.now();
+  const shape = 'promote-me-' + Date.now();
+  const w = ch.recordMethodCandidate({ session_id: sid, shape, steps: ['step one', 'step two'], acceptance: 'green', tool_classes: ['bash'] });
+  const pr = ch.promoteMethodCandidate({ id: w.id });
+  assert.ok(pr.ok && pr.insight_id, 'promote ok with a new insight id');
+  // Candidate is consumed (promoted), linked to the new insight.
+  assert.strictEqual(ch.listMethodCandidates({ session_id: sid, status: 'pending' }).length, 0, 'no longer pending');
+  const promoted = ch.listMethodCandidates({ session_id: sid, status: 'promoted' });
+  assert.strictEqual(promoted.length, 1);
+  assert.strictEqual(promoted[0].promoted_insight_id, pr.insight_id, 'candidate links the promoted insight');
+  // The promoted method NOW surfaces as a trusted ground_truth method.
+  const m = ch.recall({ query: shape, topK: 10, include_meta: true, tag: 'method' }).find(h => h.tags && h.tags.includes(`shape:${shape}`));
+  assert.ok(m, 'promoted method reachable via the targeted lookup');
+  assert.strictEqual(m.layer, 'ground_truth', 'promoted method is trusted');
+  assert.strictEqual(m.intensity, 0.8);
+  assert.ok(m.tags.includes('source:promoted'), 'provenance recorded as source:promoted');
+});
+
+test('promoteMethodCandidate: double-promote is refused; unknown id errors', () => {
+  const sid = 's3-double-' + Date.now();
+  const w = ch.recordMethodCandidate({ session_id: sid, shape: 'once-' + Date.now(), steps: ['x'] });
+  assert.ok(ch.promoteMethodCandidate({ id: w.id }).ok, 'first promote ok');
+  assert.strictEqual(ch.promoteMethodCandidate({ id: w.id }).ok, false, 'second promote refused (not pending)');
+  assert.strictEqual(ch.promoteMethodCandidate({ id: 99999999 }).ok, false, 'unknown id refused');
+  assert.strictEqual(ch.promoteMethodCandidate({}).ok, false, 'missing id refused');
+});
+
+test('promoteMethodCandidate: a failed method write rolls back — candidate stays pending (recoverable)', () => {
+  const sid = 's3-rollback-' + Date.now();
+  const w = ch.recordMethodCandidate({ session_id: sid, shape: 'rollback-' + Date.now(), steps: ['x'] });
+  // Force the method write inside promote to drop (scrub throws → record() drops).
+  const orig = secrets.scrub;
+  secrets.scrub = () => { throw new Error('boom'); };
+  let pr;
+  try {
+    pr = ch.promoteMethodCandidate({ id: w.id });
+  } finally {
+    secrets.scrub = orig;
+  }
+  assert.strictEqual(pr.ok, false, 'promote reports failure when the method write drops');
+  // The transaction rolled back: the candidate must NOT be stranded — still pending.
+  assert.strictEqual(ch.listMethodCandidates({ session_id: sid, status: 'pending' }).length, 1, 'candidate stays pending (not wedged), still reviewable');
+  // And a retry after the fault clears promotes cleanly (no duplicate, no orphan).
+  const pr2 = ch.promoteMethodCandidate({ id: w.id });
+  assert.ok(pr2.ok && pr2.insight_id, 'retry after the fault promotes cleanly');
+  assert.strictEqual(ch.listMethodCandidates({ session_id: sid, status: 'pending' }).length, 0, 'no longer pending after the successful retry');
+});
+
+test('dismissMethodCandidate: pending → dismissed, removed from the review queue; double-dismiss refused', () => {
+  const sid = 's3-dismiss-' + Date.now();
+  const w = ch.recordMethodCandidate({ session_id: sid, shape: 'drop-' + Date.now(), steps: ['x'] });
+  assert.ok(ch.dismissMethodCandidate({ id: w.id }).ok, 'dismiss ok');
+  assert.strictEqual(ch.listMethodCandidates({ session_id: sid, status: 'pending' }).length, 0, 'gone from pending');
+  assert.strictEqual(ch.listMethodCandidates({ session_id: sid, status: 'dismissed' }).length, 1, 'now dismissed');
+  assert.strictEqual(ch.dismissMethodCandidate({ id: w.id }).ok, false, 'double-dismiss refused');
+  // A dismissed candidate is never promotable.
+  assert.strictEqual(ch.promoteMethodCandidate({ id: w.id }).ok, false, 'dismissed candidate cannot be promoted');
+});
+
+test('getSessionActions: returns this session\'s session-action rows WITH parsed tags', () => {
+  const sid = 's3-actions-' + Date.now();
+  ch.record({ session_id: sid, content: 'Bash: did a thing', domain: 'session-action', tags: ['post-tool-use', 'bash', 'outcome:success'] });
+  ch.record({ session_id: sid, content: 'real curated insight', domain: 't2helix' });
+  const acts = ch.getSessionActions(sid);
+  assert.strictEqual(acts.length, 1, 'only session-action rows');
+  assert.ok(Array.isArray(acts[0].tags) && acts[0].tags.includes('outcome:success'), 'tags parsed to an array');
+});
+
 ch.close();
 
 console.log(`\n${pass} passed, ${fail} failed`);

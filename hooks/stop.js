@@ -9,8 +9,9 @@
 // recall() genuinely powerful — not just "what have I learned" but "what was
 // I doing in sessions like this one."
 
-const { getState, getCompassHistory, record, readCurrentSession, writeCurrentSession, prune, getSessionInsights } = require('../lib/chronicle');
+const { getState, getCompassHistory, record, readCurrentSession, writeCurrentSession, prune, getSessionInsights, getSessionActions, recordMethodCandidate } = require('../lib/chronicle');
 const { assessCriteria, formatCriteriaProgress } = require('../lib/goal-progress');
+const { distillCandidate } = require('../lib/distill');
 const { readStdin } = require('../lib/hook-io');
 
 async function main() {
@@ -32,6 +33,12 @@ async function main() {
     const threads = state.open_threads || [];
     const insights = state.recent_insights || [];
 
+    // Read this session's work corpus once — both the per-criterion progress note
+    // and the Stage 3 distiller score against it. Fail-soft to [] so neither
+    // consumer ever sees a throw from this shared read.
+    let sessionInsights = [];
+    try { sessionInsights = getSessionInsights(session_id || 'unknown', { limit: 100 }); } catch (_) {}
+
     // Compass summary for the session — how many WITNESS / PAUSE / OPEN
     const compassLog = getCompassHistory({ limit: 100 });
     const sessionCompass = compassLog.filter(e => e.session_id === session_id);
@@ -48,7 +55,6 @@ async function main() {
         // rather than costing the whole synthesis write.
         let progress;
         try {
-          const sessionInsights = getSessionInsights(session_id || 'unknown', { limit: 100 });
           progress = formatCriteriaProgress(
             assessCriteria({ criteria: goal.acceptance_criteria, insights: sessionInsights })
           );
@@ -83,6 +89,24 @@ async function main() {
       intensity: 0.7,
       layer: 'reflection'
     });
+
+    // Stage 3 auto-distill (v0.4). If this was a clean, goal-bounded success,
+    // distill a candidate method and write it to QUARANTINE (method_candidates) —
+    // never the surfaced method store. distillCandidate is conservative and
+    // returns null for most sessions; recordMethodCandidate writes nothing that
+    // recall can ever inject. Promotion (promote_method) is the only path onto
+    // the recalled surface. Own try/catch: a distill miss must never cost the
+    // synthesis write above or block session close.
+    try {
+      const assessment = goal && Array.isArray(goal.acceptance_criteria) && goal.acceptance_criteria.length
+        ? assessCriteria({ criteria: goal.acceptance_criteria, insights: sessionInsights })
+        : [];
+      const actions = getSessionActions(session_id || 'unknown', { limit: 200 });
+      const candidate = distillCandidate({ goal, assessment, actions });
+      if (candidate) recordMethodCandidate({ session_id: session_id || 'unknown', ...candidate });
+    } catch (_) {
+      // Fail-open: no candidate is the safe default.
+    }
   } catch (_) {
     // Never block session close
   }

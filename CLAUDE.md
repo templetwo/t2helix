@@ -80,6 +80,24 @@ token overlap against the session's own insights, rendered `[~] … (related: #i
 means "mentioned", not "done". `getSessionInsights` feeds it and deliberately excludes
 `archived-goal` rows (else the archived copy of the criteria is phantom evidence).
 
+### Auto-distill (v0.4, the "Stage 3" capability)
+
+`lib/distill.js` (pure) lets the Stop hook write a method *without being asked* — it
+distills a candidate from a successful session. The Stop hook is a **high-frequency
+writer**, so the hard rule (from the v0.1 compass-fire pollution, chronicle #2381/#2382)
+is that a distilled candidate must surface **nothing** until a human promotes it —
+*invisibility until promotion*, not merely lower rank. Mechanism: candidates live in
+their **own `method_candidates` table** (not `insights`), so they cannot enter recall /
+FTS / the targeted method lookup at all; injected volume cannot rise from auto-distill.
+`distillCandidate` is conservative (needs a goal with `acceptance_criteria`, real
+`outcome:success` with **zero** `outcome:failure`, and a majority of criteria addressed —
+most sessions distill nothing). The promote-to-trusted gate (`promote_method`) is the
+only path onto the surfaced store and is **append-only**: it writes a fresh `ground_truth`
+`domain:'method'` insight tagged `source:promoted` (CAS-guarded against double-promote),
+never mutating a row. `list_method_candidates` is the review queue; `dismiss_method_candidate`
+rejects. See `docs/stage3-auto-distill.md`. Auto-*promotion* is deliberately out of scope —
+ship explicit-only, measure the generated-vs-promoted ratio first.
+
 ### Classifications
 
 - `OPEN` — allowed (empty hook output).
@@ -123,12 +141,13 @@ detector can't flag a credential value the redactor fails to mask — the invari
 keeps "detected but persisted raw" from happening. The compass binds to it via
 `"pattern_source": "secrets"` on the `credential-paste` rule. `secrets.scrub()` (pattern
 redaction + a fixed-point backstop that coarse-masks any field still holding a maskable
-secret) runs inside the **three** write chokepoints — `record()`, `logCompass()`, and
-`createPendingConfirmation()` — so every write to `insights`, `compass_log`, and
-`pending_confirmations` is scrubbed (a secret span becomes
+secret) runs inside the **four** write chokepoints — `record()`, `logCompass()`,
+`createPendingConfirmation()`, and `recordMethodCandidate()` (v0.4) — so every write to
+`insights`, `compass_log`, `pending_confirmations`, and `method_candidates` is scrubbed
+(a secret span becomes
 `[REDACTED:<kind>:<8-hex of sha256(secret)>]`). **Here and only here we invert fail-open:
 if `scrub` throws, the write is dropped/marked, never persisted raw.** If you add a write
-path that bypasses those three, route it through `secrets.scrub` too. `createPendingConfirmation`
+path that bypasses those four, route it through `secrets.scrub` too. `createPendingConfirmation`
 hashes the **raw** summary (so `findApproval` still matches) but stores the scrubbed text.
 Bare hashes (git SHAs) and `tokenizer=`/`tokens=` are intentionally not redacted — only
 labelled/prefixed/structured secrets. `npm run redact-sweep` retro-scrubs pre-0.2 rows
@@ -160,9 +179,10 @@ fails-open inside the 5s hook budget instead of being killed mid-write) and
 ## MCP server
 
 `mcp/server.js` is hand-rolled JSON-RPC (no SDK transport abstraction beyond the schema
-types) exposing ten tools — `recall`, `record`, `record_method`, `set_goal`,
+types) exposing thirteen tools — `recall`, `record`, `record_method`, `set_goal`,
 `open_thread`, `resolve_thread`, `get_state`, `recall_compass`, `confirm_pending`,
-`list_pending`. Each maps to a `lib/chronicle.js` function. Default transport is `stdio` (the plugin path);
+`list_pending`, and (v0.4) `list_method_candidates`, `promote_method`,
+`dismiss_method_candidate`. Each maps to a `lib/chronicle.js` function. Default transport is `stdio` (the plugin path);
 `--transport sse --port 3742` serves any other MCP client from the same data dir. Both can
 run simultaneously. When adding a tool, update `TOOLS` (schema), the dispatch switch, and
 the regression contract test.

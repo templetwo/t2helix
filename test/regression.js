@@ -96,11 +96,11 @@ function test(name, fn) { tests.push({ name, fn }); }
 
 // ── Protocol ──────────────────────────────────────────────────────────────────
 
-test('protocol: tools/list returns 10 tools, each with description + inputSchema', async (client) => {
+test('protocol: tools/list returns 13 tools, each with description + inputSchema', async (client) => {
   const r = await client.request('tools/list', {});
   const tools = r.result.tools;
-  assert.strictEqual(tools.length, 10, `expected 10 tools, got ${tools.length}`);
-  const expected = ['recall', 'record', 'record_method', 'set_goal', 'open_thread', 'resolve_thread', 'get_state', 'recall_compass', 'confirm_pending', 'list_pending'];
+  assert.strictEqual(tools.length, 13, `expected 13 tools, got ${tools.length}`);
+  const expected = ['recall', 'record', 'record_method', 'set_goal', 'open_thread', 'resolve_thread', 'get_state', 'recall_compass', 'confirm_pending', 'list_pending', 'list_method_candidates', 'promote_method', 'dismiss_method_candidate'];
   const names = new Set(tools.map(t => t.name));
   for (const n of expected) {
     assert.ok(names.has(n), `tools/list missing ${n}`);
@@ -520,6 +520,61 @@ test('record_method: writes a domain:method source:explicit insight; redaction a
 test('record_method: missing required shape/steps is rejected (-32602)', async (client) => {
   const r = await client.request('tools/call', { name: 'record_method', arguments: { acceptance: 'x' } });
   assert.ok(r.error, 'should error on missing required fields');
+  assert.strictEqual(r.error.code, -32602, 'InvalidParams');
+});
+
+// ── Stage 3 auto-distill: candidate review + promote-to-trusted gate (v0.4) ──────
+
+test('list_method_candidates + promote_method: the gate makes a quarantined candidate surfaceable', async (client) => {
+  // Seed a candidate directly in quarantine (the Stop hook is what writes these
+  // live; here we exercise the MCP review+promote surface over it).
+  const sid = 'reg-promote-' + Date.now();
+  const shape = 'reg-shape-' + Date.now();
+  const w = ch.recordMethodCandidate({ session_id: sid, shape, steps: ['step a', 'step b'], acceptance: 'green', tool_classes: ['bash'] });
+  assert.ok(w.id, 'candidate seeded');
+
+  // Before promotion: visible in the review queue, invisible to recall.
+  const pending = await call(client, 'list_method_candidates', { session_id: sid });
+  assert.strictEqual(pending.count, 1, 'candidate listed as pending');
+  assert.strictEqual(pending.entries[0].status, 'pending');
+  assert.strictEqual(ch.recall({ query: shape, topK: 10, include_meta: true, tag: 'method' }).length, 0, 'quarantined: not a method yet');
+
+  // Promote: writes a trusted method, marks the candidate promoted.
+  const pr = await call(client, 'promote_method', { id: w.id });
+  assert.strictEqual(pr.ok, true, 'promote ok');
+  assert.ok(pr.insight_id, 'promote returns the new insight id');
+  const m = ch.recall({ query: shape, topK: 10, include_meta: true, tag: 'method' }).find(h => h.tags && h.tags.includes(`shape:${shape}`));
+  assert.ok(m, 'promoted method now reachable via the targeted lookup');
+  assert.strictEqual(m.layer, 'ground_truth', 'promoted method is trusted');
+  assert.ok(m.tags.includes('source:promoted'), 'provenance source:promoted');
+
+  // Candidate is no longer pending; appears under promoted with the link.
+  const afterPending = await call(client, 'list_method_candidates', { session_id: sid });
+  assert.strictEqual(afterPending.count, 0, 'no longer pending');
+  const promoted = await call(client, 'list_method_candidates', { session_id: sid, status: 'promoted' });
+  assert.strictEqual(promoted.entries[0].promoted_insight_id, pr.insight_id, 'candidate links the promoted insight');
+});
+
+test('promote_method: missing required id is rejected (-32602)', async (client) => {
+  const r = await client.request('tools/call', { name: 'promote_method', arguments: {} });
+  assert.ok(r.error, 'should error on missing id');
+  assert.strictEqual(r.error.code, -32602, 'InvalidParams');
+});
+
+test('dismiss_method_candidate: removes a candidate from the review queue', async (client) => {
+  const sid = 'reg-dismiss-' + Date.now();
+  const w = ch.recordMethodCandidate({ session_id: sid, shape: 'reg-drop-' + Date.now(), steps: ['x'] });
+  const before = await call(client, 'list_method_candidates', { session_id: sid });
+  assert.strictEqual(before.count, 1, 'one pending before dismiss');
+  const d = await call(client, 'dismiss_method_candidate', { id: w.id });
+  assert.strictEqual(d.ok, true, 'dismiss ok');
+  const after = await call(client, 'list_method_candidates', { session_id: sid });
+  assert.strictEqual(after.count, 0, 'gone from the pending queue');
+});
+
+test('dismiss_method_candidate: missing required id is rejected (-32602)', async (client) => {
+  const r = await client.request('tools/call', { name: 'dismiss_method_candidate', arguments: {} });
+  assert.ok(r.error, 'should error on missing id');
   assert.strictEqual(r.error.code, -32602, 'InvalidParams');
 });
 

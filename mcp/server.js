@@ -180,6 +180,40 @@ const TOOLS = [
         limit: { type: 'number', default: 20 }
       }
     }
+  },
+  {
+    name: 'list_method_candidates',
+    description: 'List auto-distilled method CANDIDATES awaiting review (Stage 3). Candidates are drafts the Stop hook distilled from successful sessions; they are quarantined in their own store and never surface in recall until promoted. Review them, then promote_method the good ones (refine the shape/steps first by promoting, then editing via record_method if needed) or dismiss_method_candidate the rest.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        session_id: { type: 'string', description: 'Filter to a session_id. Omit for all.' },
+        status: { type: 'string', enum: ['pending', 'promoted', 'dismissed'], default: 'pending', description: 'Which candidates to list. Default pending (the review queue).' },
+        limit: { type: 'number', default: 20 }
+      }
+    }
+  },
+  {
+    name: 'promote_method',
+    description: 'Promote an auto-distilled method candidate (by id, from list_method_candidates) to a TRUSTED, surfaceable method. This is the explicit promote-to-trusted gate: it writes a fresh ground_truth domain:\'method\' insight from the candidate (so it can now surface via the targeted lookup) and marks the candidate promoted. The ONLY path from quarantine onto the recalled surface.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        id: { type: 'number', description: 'Candidate id from list_method_candidates.' }
+      },
+      required: ['id']
+    }
+  },
+  {
+    name: 'dismiss_method_candidate',
+    description: 'Dismiss (reject) an auto-distilled method candidate by id so it stops appearing in the pending review list. Does not create a method. Use for low-quality or duplicate candidates.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        id: { type: 'number', description: 'Candidate id from list_method_candidates.' }
+      },
+      required: ['id']
+    }
   }
 ];
 
@@ -315,6 +349,24 @@ function handleToolCall(name, args) {
         limit: num(args.limit) ?? 20
       });
       return textContent({ count: entries.length, entries });
+    }
+    case 'list_method_candidates': {
+      const entries = ch.listMethodCandidates({
+        session_id: args.session_id,
+        status: args.status || 'pending',
+        limit: num(args.limit) ?? 20
+      });
+      return textContent({ count: entries.length, entries });
+    }
+    case 'promote_method': {
+      // Promote uses the candidate's own session_id for method provenance, so
+      // omit session_id here (promoteMethodCandidate falls back to row.session_id).
+      const r = ch.promoteMethodCandidate({ id: num(args.id) });
+      return textContent(r);
+    }
+    case 'dismiss_method_candidate': {
+      const r = ch.dismissMethodCandidate({ id: num(args.id) });
+      return textContent(r);
     }
     default:
       throw new Error(`unknown tool: ${name}`);
