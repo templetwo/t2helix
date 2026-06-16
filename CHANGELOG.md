@@ -3,6 +3,92 @@
 All notable changes to t2helix are documented here. Format loosely follows
 [Keep a Changelog](https://keepachangelog.com/); versioning is [SemVer](https://semver.org/).
 
+## [0.2.0] — Security & Clean Surface
+
+Stage 1 of v0.2: a recall surface with zero credential leakage. The
+`credential-paste` PAUSE rule was self-defeating — when it fired, the hook logged
+the very command it was warning about (credential and all) to two tables in
+cleartext via `recordCompassFire()` and `logCompass()`, and because compass-fire
+insights sat in the default recall surface, `recall()` re-injected the secret into
+later model context. A dogfood session on the MacBook seat confirmed two real
+credentials leaked this way (a Sovereign Bridge bearer token and a `~/.claude.json`
+token) and re-surfaced in-context. This release closes the leak at the source,
+de-noises the recall surface, and scrubs what already leaked.
+
+### Security
+- **Redact-or-drop on the write path.** New `lib/secrets.js` is the single source
+  of truth for credential patterns (shared with the compass rule). `redactSecrets()`
+  replaces each secret span with a fingerprint — `[REDACTED:<kind>:<8-hex of
+  sha256(secret)>]` — keeping entries diagnosable and linkable without storing the
+  value. It is applied at the two lowest write chokepoints, `record()` and
+  `logCompass()`, so every path into `insights` and `compass_log` is covered. This
+  is the **one place the fail-open default is inverted**: if redaction throws, the
+  write is dropped, never persisted raw. Widened coverage beyond the old rule:
+  `Authorization: Bearer`, `sk-`, `ghp_/gho_/.../github_pat_`, `AKIA…`, and
+  labelled `password/secret/token/api_key=` assignments. Bare hashes (e.g. a 40-char
+  git SHA) are deliberately **not** redacted — only labelled/prefixed secrets are.
+- **`scripts/redact-sweep.js` (`npm run redact-sweep`)** — one-shot, per-machine
+  scrub of rows that leaked before the fix. Checkpoints the WAL, backs up the db,
+  rewrites matching `insights.content` / `compass_log.{action_summary,reason}`
+  through the same redactor (FTS stays consistent via the existing triggers), then
+  verifies no row still matches. Supports `--dry-run` and `--data-dir`. NOTE:
+  resolves the standalone data dir by default — point it at the live plugin
+  chronicle explicitly (the resolved path is printed before any write).
+
+### Changed
+- **`compass-fire` is now a META domain.** It is excluded from the default
+  `recall()` and `getState()` surfaces (it was high-frequency reflection noise that
+  crowded out curated insights — and embedded any credential-shaped command). The
+  helix coupling that reads the `action:<hash>` chain already passes
+  `include_meta: true`, so the OPEN→PAUSE escalation is unaffected.
+- The compass `credential-paste` rule now resolves its regex from `lib/secrets.js`
+  via `"pattern_source": "secrets"` instead of an inline pattern — detection and
+  redaction share one vocabulary.
+
+### Added
+- **Retention/pruning** (`prune()`, called from the Stop hook) bounds the
+  previously-unbounded operational tables: `compass_log` keeps the union of the
+  last 30 days and the newest 5000 rows; `pending_confirmations` drops used/expired
+  rows. Fail-open, in its own try/catch.
+- `recall()` `tag` filter now escapes `LIKE` metacharacters (`% _ \`).
+- 26 new tests (redaction unit + false-positive guard, write-path redaction at all
+  three chokepoints, compass-fire recall/getState exclusion, redact-or-drop fail-safe,
+  retention, the detection⊇redaction invariant, every token format below, and an
+  end-to-end `redact-sweep` scrub across insights + compass_log + pending_confirmations).
+  **161 tests total.**
+
+### Hardened after adversarial review
+A multi-lens review surfaced that the first cut's detector was broader than its
+redactors — so a command could be classified PAUSE while its secret slipped through
+unmasked (the v0.1 leak, reopened). Fixes:
+- **Detection is now derived from the masking patterns**, so any credential *value*
+  that is flagged is also maskable. (A few bare key-NAMES remain detection-only for an
+  advisory PAUSE — they carry no value, so nothing leaks.)
+- **JSON-embedded secrets** (`"token":"…"`), **URL basic-auth** (`scheme://user:pass@`),
+  **HTTP Basic** headers, **special-char password values** (`@!#$%`), **short/truncated
+  bearer tokens**, and major **cloud/SaaS formats** (Slack `xox*`, Stripe `sk_live_`,
+  Google `AIza`, npm `npm_`, SendGrid `SG.`) are now masked + detected. The
+  most-common carrier — JSON-serialized MCP/WebFetch `tool_input` — was the critical miss.
+- **Third write site closed:** `createPendingConfirmation()` now scrubs the stored
+  summary/reason (hash still over the raw value, so the override match holds), and the
+  sweep covers `pending_confirmations`.
+- **False positive fixed:** `tokenizer=` / `tokens=` no longer redact (a `(?![A-Za-z])`
+  boundary after the keyword).
+- **scrub() fixed-point backstop:** the write path coarse-masks any field that still
+  holds a maskable secret after pattern redaction — a detected secret is never persisted raw.
+- **redact-sweep safety:** consistent online `db.backup()` (replacing a swallowed
+  `wal_checkpoint`+copy that could back up a corrupt db under concurrency); residual-leak
+  verify now gates on the redactor (not the looser detector), fixing both false alarms and
+  mislabeled real leaks; a non-dry run refuses the default fallback dir unless explicit.
+- compass `pattern_source` fails loud if it doesn't resolve to a RegExp (no silent
+  OPEN downgrade of the credential rule); the MCP `record` tool surfaces a dropped write
+  instead of `{ok:true,id:null}`.
+
+### Deferred to a later pass
+- MCP error sanitization / `isError` on logical-failure tool results.
+- A recall triviality gate (skip injection on trivial prompts) — borders Stage 2's
+  method-surfacing and is deferred with it.
+
 ## [0.1.0] — 2026-06-04
 
 The helix earns its name: memory and compass couple end-to-end. This release
