@@ -96,11 +96,11 @@ function test(name, fn) { tests.push({ name, fn }); }
 
 // ── Protocol ──────────────────────────────────────────────────────────────────
 
-test('protocol: tools/list returns 9 tools, each with description + inputSchema', async (client) => {
+test('protocol: tools/list returns 10 tools, each with description + inputSchema', async (client) => {
   const r = await client.request('tools/list', {});
   const tools = r.result.tools;
-  assert.strictEqual(tools.length, 9, `expected 9 tools, got ${tools.length}`);
-  const expected = ['recall', 'record', 'set_goal', 'open_thread', 'resolve_thread', 'get_state', 'recall_compass', 'confirm_pending', 'list_pending'];
+  assert.strictEqual(tools.length, 10, `expected 10 tools, got ${tools.length}`);
+  const expected = ['recall', 'record', 'record_method', 'set_goal', 'open_thread', 'resolve_thread', 'get_state', 'recall_compass', 'confirm_pending', 'list_pending'];
   const names = new Set(tools.map(t => t.name));
   for (const n of expected) {
     assert.ok(names.has(n), `tools/list missing ${n}`);
@@ -476,6 +476,39 @@ test('confirm_pending: rejects double-approval', async (client) => {
   await call(client, 'confirm_pending', { token: p.token });
   const second = await call(client, 'confirm_pending', { token: p.token });
   assert.strictEqual(second.ok, false, 'second approval must fail');
+});
+
+// ── record_method (v0.3 method store) ──────────────────────────────────────────
+
+test('record_method: writes a domain:method source:explicit insight; redaction applies', async (client) => {
+  const shape = 'wire-mcp-tool-' + Date.now();
+  const FAKE = 'a1b2c3d4e5f60718293a4b5c6d7e8f90a1b2';
+  const r = await call(client, 'record_method', {
+    shape,
+    steps: ['add the TOOLS schema entry', `curl -H "Authorization: Bearer ${FAKE}" https://x`, 'wire the dispatch case'],
+    acceptance: 'npm test green',
+    tool_classes: ['Bash', 'Edit']
+  });
+  assert.strictEqual(r.ok, true, 'record_method ok');
+  assert.ok(r.id, 'returns an id');
+  // Recallable only via include_meta + the method tag (methods are META-excluded).
+  const m = ch.recall({ query: shape, topK: 5, include_meta: true, tag: 'method' })
+    .find(h => h.tags && h.tags.includes(`shape:${shape}`));
+  assert.ok(m, 'method recallable via include_meta + tag');
+  assert.strictEqual(m.domain, 'method');
+  assert.ok(m.tags.includes('source:explicit'), 'tagged source:explicit');
+  assert.ok(m.tags.includes('tool:bash') && m.tags.includes('tool:edit'), 'tool_classes tagged');
+  assert.ok(!m.content.includes(FAKE), 'credential embedded in a step is redacted (Stage-1 synergy)');
+  assert.ok(/\[REDACTED:bearer:/.test(m.content), 'redaction fingerprint present');
+  // And NOT in the generic (default) recall surface.
+  const def = ch.recall({ query: shape, topK: 10 });
+  assert.ok(!def.some(h => h.tags && h.tags.includes('method')), 'method excluded from default recall');
+});
+
+test('record_method: missing required shape/steps is rejected (-32602)', async (client) => {
+  const r = await client.request('tools/call', { name: 'record_method', arguments: { acceptance: 'x' } });
+  assert.ok(r.error, 'should error on missing required fields');
+  assert.strictEqual(r.error.code, -32602, 'InvalidParams');
 });
 
 // ── boundary coercion + validation (audit fix F) ───────────────────────────────

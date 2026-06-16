@@ -76,6 +76,23 @@ const TOOLS = [
     }
   },
   {
+    name: 'record_method',
+    description: 'Capture a reusable PROCEDURE that demonstrably worked, keyed to a task shape, so a future session facing the same kind of task can recall the method (not just facts). Use when a sequence of steps achieved a goal. Stored as a domain:\'method\' insight; surfaced only via the targeted method lookup, never the generic recall firehose. Redaction applies, so a step containing a credential is fingerprinted automatically.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        shape: { type: 'string', description: 'A short task-shape slug, ideally <verb>-<object> (e.g. "rotate-bridge-token", "wire-mcp-tool"). This is the retrieval key.' },
+        steps: {
+          oneOf: [{ type: 'string' }, { type: 'array', items: { type: 'string' } }],
+          description: 'The ordered steps that worked — the command/tool pattern, compact (a playbook, not a transcript).'
+        },
+        acceptance: { type: 'string', description: 'The signal that confirms the method succeeded (e.g. "tests green", "heartbeat 200").' },
+        tool_classes: { type: 'array', items: { type: 'string' }, description: 'Tool classes the method uses (e.g. ["bash","edit"]) — disambiguates retrieval beyond text similarity.' }
+      },
+      required: ['shape', 'steps']
+    }
+  },
+  {
     name: 'set_goal',
     description: 'Define or update the current session goal. Anchors subsequent work.',
     inputSchema: {
@@ -240,6 +257,18 @@ function handleToolCall(name, args) {
       // fail-safe fired — surface that as a failure, not a silent {ok:true,id:null}.
       if (r && r.dropped) return textContent({ ok: false, dropped: true, reason: 'write dropped: redaction failed' });
       return textContent({ ok: true, id: r.id });
+    }
+    case 'record_method': {
+      const r = ch.recordMethod({
+        session_id: sid,
+        shape: args.shape,
+        steps: args.steps,
+        acceptance: args.acceptance,
+        tool_classes: args.tool_classes,
+        source: 'explicit'
+      });
+      if (r && r.dropped) return textContent({ ok: false, dropped: true, reason: 'write dropped: redaction failed' });
+      return textContent({ ok: true, id: r.id, shape: args.shape });
     }
     case 'set_goal': {
       ch.setGoal({

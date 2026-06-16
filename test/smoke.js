@@ -1097,6 +1097,40 @@ test('compass: pattern_source resolves to a RegExp (fail-loud guard exists)', ()
   assert.strictEqual(r.rule_id, 'credential-paste');
 });
 
+// ============================================================================
+// v0.3 Stage 2: method store (recordMethod) — domain:'method', surfaced only via
+// targeted lookup, excluded from the generic firehose.
+// ============================================================================
+
+test('recordMethod: formats numbered steps, tags shape+source+tool, excluded from default recall', () => {
+  const sid = 'method-' + Date.now();
+  const shape = 'rotate-token-' + Date.now();
+  const r = ch.recordMethod({ session_id: sid, shape, steps: ['read -s prompt', 'write env + plist', 'launchctl reload'], acceptance: 'heartbeat 200', tool_classes: ['Bash'] });
+  assert.ok(r.id, 'returns id');
+  const m = ch.recall({ query: shape, topK: 5, include_meta: true, tag: 'method' }).find(h => h.tags && h.tags.includes(`shape:${shape}`));
+  assert.ok(m, 'recallable via include_meta + tag');
+  assert.strictEqual(m.domain, 'method');
+  assert.strictEqual(m.layer, 'ground_truth');
+  assert.strictEqual(m.intensity, 0.8);
+  assert.ok(/^\[method\] /.test(m.content), 'has [method] header');
+  assert.ok(/1\. read -s prompt/.test(m.content) && /3\. launchctl reload/.test(m.content), 'numbered steps');
+  assert.ok(/Acceptance: heartbeat 200/.test(m.content), 'acceptance line');
+  assert.ok(m.tags.includes('source:explicit') && m.tags.includes('tool:bash'), 'source + tool tags');
+  // The cardinal-rule guarantee: methods never enter the generic firehose.
+  assert.ok(!ch.recall({ query: shape, topK: 10 }).some(h => h.tags && h.tags.includes('method')), 'excluded from default recall');
+  assert.ok(!ch.getState(sid).recent_insights.some(i => i.domain === 'method'), 'excluded from getState surface');
+});
+
+test('recordMethod: rejects empty shape / no steps; auto-distill ranks lower', () => {
+  assert.throws(() => ch.recordMethod({ session_id: 's', shape: '   ', steps: ['x'] }), /shape/);
+  assert.throws(() => ch.recordMethod({ session_id: 's', shape: 'x', steps: [] }), /step/);
+  const shape = 'auto-shape-' + Date.now();
+  const r = ch.recordMethod({ session_id: 's-auto', shape, steps: ['a step'], source: 'auto-distill' });
+  const m = ch.recall({ query: shape, topK: 5, include_meta: true, tag: 'method' }).find(h => h.id === r.id);
+  assert.strictEqual(m.layer, 'hypothesis', 'auto-distill is lower-confidence');
+  assert.ok(m.tags.includes('source:auto-distill'));
+});
+
 ch.close();
 
 console.log(`\n${pass} passed, ${fail} failed`);
