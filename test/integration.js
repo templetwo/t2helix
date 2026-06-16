@@ -241,9 +241,9 @@ test('Stop synthesis: per-criterion progress with a soft unfinished marker', () 
     .prepare(`SELECT content FROM insights WHERE session_id = ? AND domain = 'session-synthesis' ORDER BY created_at DESC LIMIT 1`)
     .get(sid);
   assert.ok(synth, 'stop wrote a session-synthesis record');
-  assert.ok(/Acceptance criteria \(1\/2 with recorded evidence\):/.test(synth.content), 'count header present');
-  assert.ok(/\[x\] parser tokenization fixed/.test(synth.content), 'evidenced criterion marked done');
-  assert.ok(/\[ \] PR opened for review \(unfinished/.test(synth.content), 'evidence-less criterion marked unfinished');
+  assert.ok(/Acceptance criteria \(1\/2 with a related insight this session\):/.test(synth.content), 'count header present');
+  assert.ok(/\[~\] parser tokenization fixed \(related: #/.test(synth.content), 'related criterion marked [~]');
+  assert.ok(/\[ \] PR opened for review \(no related insight\)/.test(synth.content), 'unrelated criterion marked open');
 });
 
 // ── scrub: the one-shot redact-sweep against already-leaked rows ─────────────

@@ -53,7 +53,8 @@ async function main() {
             assessCriteria({ criteria: goal.acceptance_criteria, insights: sessionInsights })
           );
         } catch (_) {
-          progress = [`Acceptance criteria: ${goal.acceptance_criteria.join('; ')}`];
+          const ac = goal.acceptance_criteria;
+          progress = [`Acceptance criteria: ${Array.isArray(ac) ? ac.join('; ') : String(ac)}`];
         }
         for (const l of progress) lines.push(l);
       }
