@@ -22,7 +22,7 @@ That's it. Claude Code will handle hooks and MCP server registration automatical
 Two hooks integrated into Claude Code's agent loop:
 
 - **UserPromptSubmit** → recall: searches a local SQLite chronicle for past insights related to your prompt, plus the current session goal, and injects the result as additional context. Writes the current `session_id` to a state file so the MCP server can use the same signature.
-- **PreToolUse** → compass: matches the proposed tool action against a rule set. **WITNESS** classifications (rm -rf wildcards, `git push --force`, `drop table`, prod-context deploys, `--no-verify`) are hard-denied. **PAUSE** classifications (credential-shaped patterns) are soft-denied with an override token — see "PAUSE override flow" below.
+- **PreToolUse** → compass: matches the proposed tool action against a rule set. **WITNESS** classifications (rm -rf wildcards, `git push --force`, `drop table`, prod-context deploys, `--no-verify`) are hard-denied. **PAUSE** classifications (credential-shaped patterns) are soft-denied with an override token — see "PAUSE override flow" below. As of v0.2, any credential that reaches the chronicle is redacted to a fingerprint on the way in (`lib/secrets.js`), at the `record()` / `logCompass()` write chokepoints.
 
 Plus an in-process MCP server exposing nine tools:
 
@@ -97,7 +97,7 @@ npm run regression    # MCP tool contract (stdio JSON-RPC)
 npm run integration   # spawns the real hooks, asserts the shipped wiring
 ```
 
-Each suite runs against an isolated temp data dir. Coverage: compass rule classifications (incl. read-only-vs-mutating prod ops), chronicle CRUD, FTS similarity retrieval, session-state round-trip, `setGoal` preserve-prior, `getCompassHistory` filters, the full `pending_confirmations` lifecycle + atomic single-use enforcement, cross-session isolation, the MCP contract + argument coercion, and — in the integration suite — the live PreToolUse/PostToolUse hooks: the PAUSE override loop, fail-open on adversarial input, and fail-safe gating when the native binding is unavailable. **135 tests total.**
+Each suite runs against an isolated temp data dir. Coverage: compass rule classifications (incl. read-only-vs-mutating prod ops), chronicle CRUD, FTS similarity retrieval, session-state round-trip, `setGoal` preserve-prior, `getCompassHistory` filters, the full `pending_confirmations` lifecycle + atomic single-use enforcement, cross-session isolation, the MCP contract + argument coercion, and — in the integration suite — the live PreToolUse/PostToolUse hooks: the PAUSE override loop, fail-open on adversarial input, and fail-safe gating when the native binding is unavailable, plus (v0.2) secret redaction at the write chokepoints, compass-fire recall exclusion, redact-or-drop fail-safe, retention pruning, and an end-to-end `redact-sweep` scrub. **161 tests total.**
 
 ## Native module
 
@@ -105,11 +105,18 @@ The chronicle is backed by `better-sqlite3`, a native module compiled against yo
 
 ```bash
 npm run rebuild       # npm rebuild better-sqlite3
+npm run redact-sweep  # one-shot scrub of credentials that leaked into the chronicle pre-0.2 (see CHANGELOG)
 ```
 
 The hooks **fail safe**: if the binding can't load, rules-based gating (deny `rm -rf /`, force-push, drop-table) still runs and you'll see a one-line "run `npm rebuild better-sqlite3`" hint instead of a crash or a silently-disabled gate.
 
 ## Status
+
+**v0.2.0 — Security & Clean Surface.** The recall surface no longer leaks credentials.
+
+- **Redact-or-drop on write:** `lib/secrets.js` (single source of truth, shared with the compass rule) fingerprints any secret span at the `record()` / `logCompass()` chokepoints. The one place fail-open is inverted: redaction failure drops the write rather than persisting raw. `npm run redact-sweep` retro-scrubs pre-0.2 rows.
+- **`compass-fire` is a META domain** — excluded from default recall/getState (it was noise, and it embedded credential-shaped commands); the helix coupling reads it via `include_meta`.
+- **Retention:** `prune()` (Stop hook) bounds `compass_log` + `pending_confirmations`.
 
 **v0.1.0** — the helix couples: memory and compass feed each other end-to-end.
 
@@ -119,4 +126,4 @@ The hooks **fail safe**: if the binding can't load, rules-based gating (deny `rm
 - PAUSE soft-deny with an **atomic single-use** token override
 - Session ID unification via `.current_session`
 - Hardened: lazy/guarded native load (the gate survives a DB outage), portable data dir, bounded `busy_timeout`, FTS query sanitization, MCP argument validation
-- 135 tests (smoke + regression + integration)
+- 161 tests (smoke + regression + integration)
