@@ -24,7 +24,7 @@ Two hooks integrated into Claude Code's agent loop:
 - **UserPromptSubmit** → recall: searches a local SQLite chronicle for past insights related to your prompt, plus the current session goal, and injects the result as additional context. Writes the current `session_id` to a state file so the MCP server can use the same signature.
 - **PreToolUse** → compass: matches the proposed tool action against a rule set. **WITNESS** classifications (rm -rf wildcards, `git push --force`, `drop table`, prod-context deploys, `--no-verify`) are hard-denied. **PAUSE** classifications (credential-shaped patterns) are soft-denied with an override token — see "PAUSE override flow" below. As of v0.2, any credential that reaches the chronicle is redacted to a fingerprint on the way in (`lib/secrets.js`), at the `record()` / `logCompass()` write chokepoints.
 
-Plus an in-process MCP server exposing ten tools:
+Plus an in-process MCP server exposing thirteen tools:
 
 | Tool | Purpose |
 |------|---------|
@@ -38,6 +38,9 @@ Plus an in-process MCP server exposing ten tools:
 | `recall_compass` | Query the compass log of past PreToolUse classifications (filter by classification, matched_only, limit). |
 | `confirm_pending` | Approve a pending PAUSE confirmation by token. Single-use; the retry consumes the approval. |
 | `list_pending` | Review unexpired pending/approved/used confirmation requests. |
+| `list_method_candidates` | (v0.4) Review the queue of auto-distilled method **candidates** the Stop hook produced from successful sessions. Quarantined — they never surface in recall until promoted. Filter by `status` (`pending`/`promoted`/`dismissed`). |
+| `promote_method` | (v0.4) Promote a candidate (by `id`) to a trusted, surfaceable `domain:'method'` insight (`source:promoted`). The only path from quarantine onto the recalled surface. |
+| `dismiss_method_candidate` | (v0.4) Reject a candidate (by `id`) so it leaves the review queue without becoming a method. |
 
 ## PAUSE override flow
 
@@ -85,7 +88,7 @@ npm run serve
 cloudflare tunnel --url http://localhost:3742
 ```
 
-Then register `http://localhost:3742/sse` (or your tunnel URL) as an MCP connector in your client. The tool surface is identical to the Claude Code plugin — same ten tools, same chronicle, same data dir.
+Then register `http://localhost:3742/sse` (or your tunnel URL) as an MCP connector in your client. The tool surface is identical to the Claude Code plugin — same thirteen tools, same chronicle, same data dir.
 
 The stdio path (Claude Code plugin) is unaffected. Both can run simultaneously from the same data dir.
 
@@ -98,7 +101,7 @@ npm run regression    # MCP tool contract (stdio JSON-RPC)
 npm run integration   # spawns the real hooks, asserts the shipped wiring
 ```
 
-Each suite runs against an isolated temp data dir. Coverage: compass rule classifications (incl. read-only-vs-mutating prod ops), chronicle CRUD, FTS similarity retrieval, session-state round-trip, `setGoal` preserve-prior, `getCompassHistory` filters, the full `pending_confirmations` lifecycle + atomic single-use enforcement, cross-session isolation, the MCP contract + argument coercion, and — in the integration suite — the live PreToolUse/PostToolUse hooks: the PAUSE override loop, fail-open on adversarial input, and fail-safe gating when the native binding is unavailable, plus (v0.2) secret redaction at the write chokepoints, compass-fire recall exclusion, redact-or-drop fail-safe, retention pruning, and an end-to-end `redact-sweep` scrub, plus (v0.3) the method store + firehose-exclusion, recall-surface selection (gate/relevance/caps/char-volume), and the boundary-active goal lifecycle + Stop per-criterion synthesis. **184 tests total.**
+Each suite runs against an isolated temp data dir. Coverage: compass rule classifications (incl. read-only-vs-mutating prod ops), chronicle CRUD, FTS similarity retrieval, session-state round-trip, `setGoal` preserve-prior, `getCompassHistory` filters, the full `pending_confirmations` lifecycle + atomic single-use enforcement, cross-session isolation, the MCP contract + argument coercion, and — in the integration suite — the live PreToolUse/PostToolUse hooks: the PAUSE override loop, fail-open on adversarial input, and fail-safe gating when the native binding is unavailable, plus (v0.2) secret redaction at the write chokepoints, compass-fire recall exclusion, redact-or-drop fail-safe, retention pruning, and an end-to-end `redact-sweep` scrub, plus (v0.3) the method store + firehose-exclusion, recall-surface selection (gate/relevance/caps/char-volume), and the boundary-active goal lifecycle + Stop per-criterion synthesis, and — (v0.4) — the auto-distill pure distiller (conservative gating), the quarantine candidate store with the never-surfaces invariant, and the promote-to-trusted / dismiss gate (incl. transactional rollback recoverability) end-to-end through the Stop hook. **203 tests total.**
 
 ## Native module
 
@@ -112,6 +115,12 @@ npm run redact-sweep  # one-shot scrub of credentials that leaked into the chron
 The hooks **fail safe**: if the binding can't load, rules-based gating (deny `rm -rf /`, force-push, drop-table) still runs and you'll see a one-line "run `npm rebuild better-sqlite3`" hint instead of a crash or a silently-disabled gate.
 
 ## Status
+
+**v0.4.0 — Auto-Distill (Stage 3).** The Stop hook now distills a method *candidate* from a successful session automatically — but because the Stop hook is a high-frequency writer, candidates are **quarantined** and surface nothing until explicitly promoted.
+
+- **Quarantine store** (`method_candidates`, its own table — not `insights`): a candidate can never enter recall/FTS/the method lookup, so injected volume cannot rise from auto-distill. `status`: `pending → promoted | dismissed`, no TTL.
+- **Conservative distiller** (`lib/distill.js`, pure): a candidate only when a goal with `acceptance_criteria` was set, the session shows `outcome:success` with **zero** failures, and a majority of criteria are addressed. Most sessions distill nothing. The fourth scrub chokepoint (`recordMethodCandidate`) keeps credentials out.
+- **Promote-to-trusted gate** (`promote_method`, the only path onto the surfaced store; append-only — writes a fresh `ground_truth` method tagged `source:promoted`, CAS-guarded). Plus `list_method_candidates` (review queue) and `dismiss_method_candidate`. Auto-*promotion* deferred — ship explicit-only, measure the generated-vs-promoted ratio first.
 
 **v0.3.0 — Method-Surfacing (Stage 2).** Recall learns to surface the *procedure*, not just facts — under a strict cardinal rule that total injected volume goes *down*.
 

@@ -95,3 +95,27 @@ CREATE TABLE IF NOT EXISTS pending_confirmations (
 
 CREATE INDEX IF NOT EXISTS idx_pending_token ON pending_confirmations(token);
 CREATE INDEX IF NOT EXISTS idx_pending_lookup ON pending_confirmations(session_id, action_hash, status);
+
+-- Stage 3 auto-distill (v0.4). A QUARANTINE store for method candidates the Stop
+-- hook distills from successful sessions. Deliberately its OWN table, NOT the
+-- insights table: a candidate is therefore not an insight, cannot enter recall /
+-- FTS / the targeted method lookup, and so can never raise injected volume — the
+-- strongest guarantee of the cardinal rule given the Stop hook is a high-frequency
+-- writer. status lifecycle: pending -> promoted | dismissed. NOT time-boxed (no
+-- expires_at): a candidate persists until a human reviews it. promote_method is
+-- the only path from here onto the surfaced method store (writes a fresh
+-- domain:'method' insight and links it via promoted_insight_id).
+CREATE TABLE IF NOT EXISTS method_candidates (
+  id INTEGER PRIMARY KEY,
+  session_id TEXT NOT NULL,
+  shape TEXT NOT NULL,
+  steps TEXT NOT NULL,
+  acceptance TEXT,
+  tool_classes TEXT,
+  status TEXT NOT NULL DEFAULT 'pending',
+  created_at INTEGER NOT NULL,
+  resolved_at INTEGER,
+  promoted_insight_id INTEGER
+);
+
+CREATE INDEX IF NOT EXISTS idx_method_candidates_status ON method_candidates(status, created_at);

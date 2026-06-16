@@ -3,6 +3,62 @@
 All notable changes to t2helix are documented here. Format loosely follows
 [Keep a Changelog](https://keepachangelog.com/); versioning is [SemVer](https://semver.org/).
 
+## [0.4.0] — Auto-Distill (Stage 3)
+
+Stage 3 closes the method loop: instead of only recording methods by hand
+(`record_method`), the Stop hook now **distills** a candidate method from a
+successful session automatically. But the Stop hook is a *high-frequency writer*,
+and the chronicle's own lived lesson (the v0.1 compass-fire pollution) is that the
+highest-frequency writer drowns the signal — "amplify successes the way the compass
+amplifies failures" is the firehose trap. So Stage 3 ships **explicit-only first**:
+a distilled candidate is **quarantined** and surfaces *nothing* until a human
+explicitly promotes it. The cardinal rule therefore holds by construction — injected
+volume cannot rise from auto-distill — and the candidate-generated-vs-promoted ratio
+becomes the measurement we wanted before ever automating promotion.
+
+### Added
+- **Quarantine candidate store — its own table, not `insights`.** New
+  `method_candidates` table (`status`: `pending → promoted | dismissed`, **no TTL** —
+  persists until reviewed). A candidate is therefore *not* an insight: it can never
+  enter `recall()` / FTS / the targeted method lookup, so it cannot raise injected
+  volume. This is the strongest possible guarantee of the cardinal rule given the
+  Stop hook fires every session.
+- **Pure distiller (`lib/distill.js`, DI-tested like `goal-progress.js`/`surface.js`).**
+  `distillCandidate({ goal, assessment, actions })` is deliberately **conservative**:
+  it returns a candidate only when a goal with `acceptance_criteria` was set, the
+  session shows real `outcome:success` signal and **zero** `outcome:failure`, and a
+  majority of criteria are addressed (reuses the Stop `assessCriteria` signal). Most
+  sessions distill nothing. The candidate (shape from the goal, a deduped/​capped
+  step skeleton from session-action rows, tool classes) is a rough draft — that
+  roughness is exactly why it is gated rather than auto-surfaced.
+- **Stop-hook wiring.** A new, independent `try/catch` block (fail-open, never blocks
+  session close) calls the distiller and writes any candidate to quarantine via
+  `recordMethodCandidate` — the **fourth scrub chokepoint** (candidate fields bypass
+  `record()`, so they are scrubbed here with the same redact-or-drop fail-safe).
+- **Promote-to-trusted gate + three MCP tools** (the server now exposes **thirteen**
+  tools): `list_method_candidates` (the review queue), `promote_method` (the *only*
+  path from quarantine onto the surfaced store — writes a fresh `ground_truth`
+  `domain:'method'` insight tagged `source:promoted`, **append-only**, never mutating
+  a row; CAS-guarded against double-promote), and `dismiss_method_candidate`.
+- **`recordMethod` provenance.** `source:'promoted'` now counts as trusted alongside
+  `source:'explicit'` (both `ground_truth`/0.8); the `source:` tag preserves whether a
+  method was hand-authored or promoted from a distilled candidate.
+- Tests: **+19** (smoke 135, regression 52, integration 16 = **203**, all green) —
+  the distiller gates (incl. tolerating sparse `actions`), credential scrubbing, the
+  quarantine-never-surfaces invariant (generic recall, the `tag:method` lookup, and
+  `surface.selectInjection`), promote→trusted-surfaceable, double-promote/dismiss
+  refusal, promote **rollback-leaves-candidate-recoverable**, and the Stop-hook
+  end-to-end (success distills, a failure distills nothing).
+
+### Reviewed
+- Hardened after a five-lens adversarial review (each finding independently verified):
+  the promote gate now runs the method write + the `pending→promoted` flip in a
+  **single transaction** (better-sqlite3 auto-rollback), so a failed/raced write can
+  never strand a candidate mid-promote or write a duplicate method — and the
+  intermediate `promoting` state is gone. Also: `tool_classes` now flows through the
+  scrub chokepoint; the distiller tolerates `null` elements in `actions`; and the
+  Stop hook reads the session corpus once instead of twice.
+
 ## [0.3.0] — Method-Surfacing (Stage 2)
 
 Stage 2 builds on the clean v0.2 surface. v0.2 removed the noise (and the leak);

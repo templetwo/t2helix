@@ -246,6 +246,50 @@ test('Stop synthesis: per-criterion progress with a soft unfinished marker', () 
   assert.ok(/\[ \] PR opened for review \(no related insight\)/.test(synth.content), 'unrelated criterion marked open');
 });
 
+// ── Stop: auto-distill a candidate from a successful session (v0.4 Stage 3) ──
+
+test('Stop auto-distill: a clean goal-bounded success yields a QUARANTINED candidate', () => {
+  const sid = 'distill-ok-' + Date.now();
+  ch.setGoal({
+    session_id: sid,
+    goal: 'deploy the worker to HQ',
+    acceptance_criteria: ['worker deployed', 'smoke green']
+  });
+  // In-session work addressing both criteria (feeds the goal-progress assessment).
+  ch.record({ session_id: sid, content: 'deployed the worker to HQ successfully', domain: 't2helix' });
+  ch.record({ session_id: sid, content: 'ran the smoke suite, all green', domain: 't2helix' });
+  // Session-action rows with success outcomes (the distiller's success signal).
+  ch.record({ session_id: sid, content: 'Bash: npm run smoke', domain: 'session-action', tags: ['post-tool-use', 'bash', 'outcome:success'] });
+  ch.record({ session_id: sid, content: 'Edit: hooks/stop.js', domain: 'session-action', tags: ['post-tool-use', 'edit', 'outcome:success'] });
+
+  const r = runHook('stop.js', { session_id: sid });
+  assert.strictEqual(r.code, 0, `stop exited ${r.code}: ${r.stderr}`);
+  assert.deepStrictEqual(r.out, {}, 'stop still fails-open with empty {}');
+
+  // A candidate was distilled into the QUARANTINE store.
+  const cands = ch.listMethodCandidates({ session_id: sid });
+  assert.strictEqual(cands.length, 1, 'one method candidate distilled');
+  assert.strictEqual(cands[0].shape, 'deploy-worker', 'shape derived from the goal');
+  assert.strictEqual(cands[0].status, 'pending', 'candidate awaits review');
+  // CARDINAL RULE: the candidate must NOT be surfaceable — it is not a method.
+  assert.strictEqual(ch.recall({ query: 'deploy worker', topK: 10, include_meta: true, tag: 'method' }).length, 0, 'candidate is quarantined, not a surfaceable method');
+  // The synthesis write still happened (distill is a separate, additive concern).
+  const synth = ch.db().prepare(`SELECT content FROM insights WHERE session_id = ? AND domain = 'session-synthesis' LIMIT 1`).get(sid);
+  assert.ok(synth, 'session-synthesis still written alongside the distill');
+});
+
+test('Stop auto-distill: a session that hit a failure distills NOTHING', () => {
+  const sid = 'distill-fail-' + Date.now();
+  ch.setGoal({ session_id: sid, goal: 'fix the parser bug', acceptance_criteria: ['parser fixed', 'tests green'] });
+  ch.record({ session_id: sid, content: 'fixed the parser and tests green', domain: 't2helix' });
+  ch.record({ session_id: sid, content: 'Bash: npm test', domain: 'session-action', tags: ['post-tool-use', 'bash', 'outcome:success'] });
+  ch.record({ session_id: sid, content: 'Bash: failed deploy', domain: 'session-action', tags: ['post-tool-use', 'bash', 'outcome:failure'] });
+
+  const r = runHook('stop.js', { session_id: sid });
+  assert.strictEqual(r.code, 0, `stop exited ${r.code}: ${r.stderr}`);
+  assert.strictEqual(ch.listMethodCandidates({ session_id: sid }).length, 0, 'a failure in the session disqualifies distillation');
+});
+
 // ── scrub: the one-shot redact-sweep against already-leaked rows ─────────────
 
 test('redact-sweep: scrubs a pre-existing leaked row from insights + compass_log + FTS', () => {
