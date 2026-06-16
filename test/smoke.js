@@ -1131,6 +1131,67 @@ test('recordMethod: rejects empty shape / no steps; auto-distill ranks lower', (
   assert.ok(m.tags.includes('source:auto-distill'));
 });
 
+// ============================================================================
+// v0.3 Stage 2 step 2: recall-surface selection (lib/surface) — the cardinal rule
+// ============================================================================
+const surface = require('../lib/surface');
+
+test('surface.isTrivialPrompt: acks + short-no-token trivial; task prompts not', () => {
+  for (const p of ['yea', 'nice thats fine', 'ok', 'try hq again', 'merge it', 'keep going'])
+    assert.ok(surface.isTrivialPrompt(p), `"${p}" should be trivial`);
+  for (const p of ['fix the parser bug in lib/secrets.js', 'how do I rotate the bridge token', 'review the credential diff'])
+    assert.ok(!surface.isTrivialPrompt(p), `"${p}" should NOT be trivial`);
+});
+
+test('surface.selectInjection: trivial prompt suppresses generic recall', () => {
+  const generic = [{ id: 1, content: 'unrelated chatter', tags: [], domain: 'x' }];
+  const r = surface.selectInjection({ goal: null, prompt: 'yea', recall: () => generic });
+  assert.strictEqual(r.trivial, true);
+  assert.strictEqual(r.hits.length, 0, 'no generic insights on a trivial prompt');
+});
+
+test('surface.selectInjection: active goal trims generic recall to topK 2 + relevance-filters', () => {
+  let askedTopK = null;
+  const recall = (opts) => {
+    if (opts.tag === 'method') return [];
+    askedTopK = opts.topK;
+    return [
+      { id: 1, content: 'parser tokenization edge cases', tags: [], domain: 'x' },
+      { id: 2, content: 'totally unrelated pizza note', tags: [], domain: 'x' }
+    ].slice(0, opts.topK);
+  };
+  const r = surface.selectInjection({ goal: { goal: 'fix the parser tokenization' }, prompt: 'parser tokenization bug', recall });
+  assert.strictEqual(askedTopK, 2, 'goal active -> topK 2 (trim harder)');
+  assert.ok(r.hits.length >= 1 && r.hits.every(h => /parser|token/.test(h.content)), 'relevance-filtered to shared tokens');
+});
+
+test('surface.selectInjection: method surfaces only above the relevance bar', () => {
+  const method = { id: 9, content: '[method] rotate-bridge-token\n1. read -s\n2. write env', domain: 'method', tags: ['method', 'shape:rotate-bridge-token', 'source:explicit'], layer: 'ground_truth' };
+  const recall = (opts) => (opts.tag === 'method' ? [method] : []);
+  const hit = surface.selectInjection({ goal: { goal: 'rotate the bridge token on HQ' }, prompt: 'do it', recall });
+  assert.ok(hit.method && hit.method.id === 9, 'relevant method surfaced (slug shares tokens)');
+  const miss = surface.selectInjection({ goal: { goal: 'design the dashboard layout' }, prompt: 'do it', recall });
+  assert.strictEqual(miss.method, null, 'irrelevant method NOT surfaced (weak match = no method)');
+});
+
+test('surface.selectInjection: caps generic hits at 3 and is fail-open', () => {
+  const many = Array.from({ length: 8 }, (_, i) => ({ id: i, content: `shared token chronicle entry number ${i}`, tags: [], domain: 'x' }));
+  const r = surface.selectInjection({ goal: null, prompt: 'chronicle entry token', recall: (o) => (o.tag === 'method' ? [] : many.slice(0, o.topK)) });
+  assert.ok(r.hits.length <= 3, 'never more than 3 insights');
+  const safe = surface.selectInjection({ goal: null, prompt: 'something real here', recall: () => { throw new Error('boom'); } });
+  assert.deepStrictEqual({ m: safe.method, h: safe.hits.length }, { m: null, h: 0 }, 'recall throw is fail-open');
+});
+
+test('surface.buildContext: method leads the insights section; goal shown', () => {
+  const ctx = surface.buildContext({
+    goal: { goal: 'G' },
+    method: { content: '[method] x\n1. step', tags: [] },
+    hits: [{ id: 1, content: 'h1', domain: 'd', layer: 'hypothesis' }]
+  });
+  assert.ok(ctx.indexOf('**Method for this kind of task:**') < ctx.indexOf('**Related from chronicle:**'), 'method leads insights');
+  assert.ok(/Current goal:/.test(ctx));
+});
+
 ch.close();
 
 console.log(`\n${pass} passed, ${fail} failed`);
