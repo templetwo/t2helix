@@ -236,6 +236,9 @@ function handleToolCall(name, args) {
         intensity: num(args.intensity),
         layer: args.layer
       });
+      // record() returns {id:null, dropped:true} when the redact-or-drop
+      // fail-safe fired — surface that as a failure, not a silent {ok:true,id:null}.
+      if (r && r.dropped) return textContent({ ok: false, dropped: true, reason: 'write dropped: redaction failed' });
       return textContent({ ok: true, id: r.id });
     }
     case 'set_goal': {
