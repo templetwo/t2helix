@@ -70,6 +70,12 @@ The loader refuses a non-dry run without an explicit `--data-dir` /
 `fp:` already present) and **append-only** (no existing row is rewritten, so no
 backup step). After import, `<n> error-fix insight(s)` is reported as a verify.
 
+**Exit codes:** `0` = fully clean run; `1` = partial load (one or more malformed
+lines or scrub-dropped rows — the valid subset still landed, and an idempotent
+re-run fills the rest); `2` = misuse (missing `--file`, file not found, or a real
+run refused for want of an explicit data dir). So `$?` distinguishes a clean load
+from a partial one, in keeping with the "make dropped writes visible" ethos.
+
 ## Matching
 
 Today: an error-fix entry surfaces when its tokens appear in a prompt — paste a

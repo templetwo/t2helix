@@ -80,6 +80,9 @@ function main() {
   }
   if (!records.length) {
     console.log('  (nothing to import)');
+    // A file that parsed to ZERO valid records but DID have malformed lines is a
+    // failed run, not a no-op — exit non-zero so it isn't mistaken for success.
+    if (errors.length) process.exitCode = 1;
     return;
   }
 
@@ -97,6 +100,18 @@ function main() {
     console.log(`  verify   : ${total} error-fix insight(s) now in the chronicle`);
   }
   ch.close();
+
+  // Honest exit code (review findings 1 + 3): 0 ONLY on a fully clean run. A
+  // malformed parse line OR a scrub-dropped row means a PARTIAL load — the valid
+  // subset still landed (useful, idempotent re-run fills the rest), but an
+  // operator/CI must be able to tell from $? that not everything made it in.
+  // Consistent with the project's "make dropped writes visible" ethos.
+  if (errors.length || counts.dropped) {
+    console.error(
+      `  INCOMPLETE: ${errors.length} malformed line(s), ${counts.dropped} dropped row(s) — partial load. Exit 1.`
+    );
+    process.exitCode = 1;
+  }
 }
 
 try {

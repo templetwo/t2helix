@@ -23,9 +23,16 @@ could not yet say *how to fix* what it detected. This fills that gap.
   `redact-sweep`: `--file <atlas.jsonl>`, `--data-dir <dir>`, `--dry-run`, and the
   same refuse-the-bare-fallback safety so the atlas can't be loaded into the empty
   `~/.t2helix-data` standalone dir by accident. Append-only and non-destructive.
-- **`test/import-atlas.js`** — 9 tests (parse/validation, stable fingerprint,
+- **`test/import-atlas.js`** — 14 tests (parse/validation, stable fingerprint,
   canonical shape, idempotent re-import, scrub-on-write, recall visibility,
-  dry-run writes nothing). Wired into `npm test`.
+  dry-run writes nothing, and the CLI exit-code contract). Wired into `npm test`.
+
+### Honesty of surface (pre-merge review findings 1 + 3)
+- **Exit code reflects partial loads.** The CLI now exits `1` (not `0`) when any
+  line was malformed or any row was scrub-dropped — the valid subset still loads,
+  but `$?` no longer reports a partial load as success. Exit `2` stays reserved for
+  misuse (missing or not-found `--file`, or a real run refused for want of an
+  explicit data dir). Consistent with the "make dropped writes visible" ethos.
 
 ### Design (settled, not re-litigated)
 - **Storage = the insights tier, not a parallel `error_atlas` table.** A parallel

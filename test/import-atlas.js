@@ -14,8 +14,19 @@ const assert = require('assert');
 const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 't2helix-atlas-'));
 process.env.T2HELIX_DATA_DIR = tmpDir;
 
+const { spawnSync } = require('child_process');
+
 const ch = require('../lib/chronicle');
 const atlas = require('../lib/atlas');
+
+const SCRIPT = path.join(__dirname, '..', 'scripts', 'import-atlas.js');
+// Run the CLI in a child process with a clean env (no inherited data dir unless
+// the test passes one), so exit-code behavior is exercised end-to-end.
+function runCli(args, { inheritDataDir = false } = {}) {
+  const env = { ...process.env };
+  if (!inheritDataDir) { delete env.T2HELIX_DATA_DIR; delete env.CLAUDE_PLUGIN_DATA; }
+  return spawnSync(process.execPath, [SCRIPT, ...args], { encoding: 'utf8', env });
+}
 
 let pass = 0, fail = 0;
 function test(name, fn) {
@@ -125,6 +136,58 @@ test('importAtlas: dry-run reports would-insert but writes nothing', () => {
   assert.strictEqual(dr.counts.inserted, 1, 'dry-run reports the would-insert');
   const after = ch.db().prepare(`SELECT count(*) AS n FROM insights WHERE domain='error-fix'`).get().n;
   assert.strictEqual(after, before, 'dry-run must not write any row');
+});
+
+// ── CLI exit-code contract (review findings 1 + 3): exit 0 ONLY on a clean run ──
+
+test('CLI: clean load exits 0 and loads the valid subset', () => {
+  const d = fs.mkdtempSync(path.join(os.tmpdir(), 't2helix-atlas-cli-'));
+  const f = path.join(d, 'clean.jsonl');
+  fs.writeFileSync(f, SAMPLE_JSONL);
+  const r = runCli(['--file', f, '--data-dir', d]);
+  assert.strictEqual(r.status, 0, `expected exit 0, got ${r.status}; stderr: ${r.stderr}`);
+  assert.match(r.stdout, /inserted\s*:\s*3/, 'loaded all 3 valid entries');
+});
+
+test('CLI: partial load (one malformed line) exits 1 but still loads the valid subset', () => {
+  const d = fs.mkdtempSync(path.join(os.tmpdir(), 't2helix-atlas-cli-'));
+  const f = path.join(d, 'partial.jsonl');
+  fs.writeFileSync(f, [JSON.stringify(SAMPLE[0]), 'NOT JSON', JSON.stringify(SAMPLE[1])].join('\n') + '\n');
+  const r = runCli(['--file', f, '--data-dir', d]);
+  assert.strictEqual(r.status, 1, `expected exit 1 on partial load, got ${r.status}`);
+  assert.match(r.stderr, /INCOMPLETE/, 'prints an INCOMPLETE notice on stderr');
+  assert.match(r.stdout, /inserted\s*:\s*2/, 'still loaded the 2 valid entries (partial success)');
+});
+
+test('CLI: file with ONLY malformed lines exits 1 (not a silent no-op)', () => {
+  const d = fs.mkdtempSync(path.join(os.tmpdir(), 't2helix-atlas-cli-'));
+  const f = path.join(d, 'allbad.jsonl');
+  fs.writeFileSync(f, 'NOT JSON\n{"pattern":"x"}\n');
+  const r = runCli(['--file', f, '--data-dir', d]);
+  assert.strictEqual(r.status, 1, `expected exit 1 when nothing valid parsed, got ${r.status}`);
+});
+
+test('CLI: refuses a real run without an explicit data dir (exit 2)', () => {
+  const d = fs.mkdtempSync(path.join(os.tmpdir(), 't2helix-atlas-cli-'));
+  const f = path.join(d, 'x.jsonl');
+  fs.writeFileSync(f, SAMPLE_JSONL);
+  const r = runCli(['--file', f]); // no --data-dir, env stripped
+  assert.strictEqual(r.status, 2, `expected exit 2 (refuse bare fallback), got ${r.status}`);
+  assert.match(r.stderr, /REFUSING/);
+});
+
+test('CLI: dry-run without an explicit data dir is allowed (exit 0, writes nothing)', () => {
+  const d = fs.mkdtempSync(path.join(os.tmpdir(), 't2helix-atlas-cli-'));
+  const f = path.join(d, 'x.jsonl');
+  fs.writeFileSync(f, SAMPLE_JSONL);
+  // dry-run is read-only, so the bare-fallback refusal does not apply; point it
+  // at an explicit empty dir anyway to keep the child hermetic.
+  const r = runCli(['--file', f, '--data-dir', d, '--dry-run']);
+  assert.strictEqual(r.status, 0, `dry-run should exit 0, got ${r.status}`);
+  assert.match(r.stdout, /would insert\s*:\s*3/);
+  // The post-write "verify : N error-fix insight(s)" line is gated behind a real
+  // (non-dry) run, so its absence proves nothing was committed.
+  assert.ok(!/verify\s*:/.test(r.stdout), 'dry-run must not emit the post-write verify line');
 });
 
 ch.close();
