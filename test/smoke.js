@@ -1513,6 +1513,97 @@ test('getSessionActions: returns this session\'s session-action rows WITH parsed
   assert.ok(Array.isArray(acts[0].tags) && acts[0].tags.includes('outcome:success'), 'tags parsed to an array');
 });
 
+// ── policy-diff + repo-local merge — Item 3 (v0.6.0 policy-as-code) ─────────
+
+const { diffRuleSets, hasLoosenedBoundaries } = require('../lib/policy-diff');
+
+test('policy-diff: removing a WITNESS rule is a hard loosening', () => {
+  const base = [{ id: 'rm-rf-root', classification: 'WITNESS', pattern: 'rm -rf /' }];
+  const head = [];
+  const f = diffRuleSets(base, head);
+  assert.strictEqual(f.length, 1);
+  assert.strictEqual(f[0].kind, 'removed');
+  assert.ok(hasLoosenedBoundaries(f), 'hasLoosenedBoundaries detects it');
+});
+
+test('policy-diff: downgrading WITNESS→PAUSE is a hard loosening', () => {
+  const base = [{ id: 'r1', classification: 'WITNESS', pattern: 'x' }];
+  const head = [{ id: 'r1', classification: 'PAUSE', pattern: 'x' }];
+  const f = diffRuleSets(base, head);
+  assert.strictEqual(f[0].kind, 'downgraded');
+  assert.ok(hasLoosenedBoundaries(f));
+});
+
+test('policy-diff: adding new rules is always a pass', () => {
+  const base = [{ id: 'r1', classification: 'WITNESS', pattern: 'x' }];
+  const head = [{ id: 'r1', classification: 'WITNESS', pattern: 'x' }, { id: 'r2', classification: 'PAUSE', pattern: 'y' }];
+  const f = diffRuleSets(base, head);
+  assert.strictEqual(f.length, 0, 'no findings when only adding');
+  assert.ok(!hasLoosenedBoundaries(f));
+});
+
+test('policy-diff: pattern change is informational (REVIEW), not a hard failure', () => {
+  const base = [{ id: 'r1', classification: 'WITNESS', pattern: 'strict' }];
+  const head = [{ id: 'r1', classification: 'WITNESS', pattern: 'looser?' }];
+  const f = diffRuleSets(base, head);
+  assert.strictEqual(f[0].kind, 'pattern_changed', 'flagged as pattern_changed');
+  assert.ok(!hasLoosenedBoundaries(f), 'pattern_changed is NOT a hard failure');
+});
+
+test('compass.mergeRepoPolicy: adds new rules, never overrides existing IDs', () => {
+  const base = [
+    { id: 'existing-witness', classification: 'WITNESS', pattern: 'x', _regex: /x/ }
+  ];
+  const policyFile = path.join(tmpDir, 'merge-test-policy.json');
+  fs.writeFileSync(policyFile, JSON.stringify({
+    version: '1.0',
+    rules: [
+      { id: 'new-pause', classification: 'PAUSE', tool: 'Bash', pattern: 'dangerous-cmd' },
+      { id: 'existing-witness', classification: 'OPEN', pattern: 'y' } // attempt to downgrade — must be ignored
+    ]
+  }));
+  const merged = compass.mergeRepoPolicy(base, policyFile);
+  assert.strictEqual(merged.length, 2, 'one rule added');
+  assert.ok(merged.find(r => r.id === 'new-pause'), 'new rule added');
+  const existing = merged.find(r => r.id === 'existing-witness');
+  assert.strictEqual(existing.classification, 'WITNESS', 'WITNESS floor preserved — not downgraded');
+});
+
+test('compass.mergeRepoPolicy: invalid regex in repo policy is skipped (fail-open)', () => {
+  const base = [];
+  const policyFile = path.join(tmpDir, 'bad-regex-policy.json');
+  fs.writeFileSync(policyFile, JSON.stringify({
+    version: '1.0',
+    rules: [{ id: 'bad', classification: 'PAUSE', tool: 'Bash', pattern: '[unclosed' }]
+  }));
+  const merged = compass.mergeRepoPolicy(base, policyFile);
+  assert.strictEqual(merged.length, 0, 'bad regex rule skipped, not a crash');
+});
+
+test('compass.loadRules: repo-local policy rule fires via T2HELIX_POLICY_DIR override', () => {
+  compass._resetCache();
+  const policyDir = path.join(tmpDir, 'repopolicy');
+  fs.mkdirSync(path.join(policyDir, '.t2helix'), { recursive: true });
+  fs.writeFileSync(path.join(policyDir, '.t2helix', 'policy.json'), JSON.stringify({
+    version: '1.0',
+    rules: [{ id: 'test-custom-rule', classification: 'PAUSE', tool: 'Bash', pattern: 'DO_NOT_RUN_THIS_SENTINEL' }]
+  }));
+  const origPolicyDir = process.env.T2HELIX_POLICY_DIR;
+  process.env.T2HELIX_POLICY_DIR = policyDir;
+  try {
+    const result = compass.classify({ tool_name: 'Bash', tool_input: { command: 'DO_NOT_RUN_THIS_SENTINEL' } });
+    assert.strictEqual(result.classification, 'PAUSE', 'repo-local rule fires');
+    assert.strictEqual(result.rule_id, 'test-custom-rule');
+  } finally {
+    if (origPolicyDir !== undefined) {
+      process.env.T2HELIX_POLICY_DIR = origPolicyDir;
+    } else {
+      delete process.env.T2HELIX_POLICY_DIR;
+    }
+    compass._resetCache();
+  }
+});
+
 // ── health() — Item 2 (v0.5.x fail-loud + doctor) ───────────────────────────
 
 test('health: returns GREEN when driver + DB + schema are all operational', () => {

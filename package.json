@@ -1,6 +1,6 @@
 {
   "name": "t2helix",
-  "version": "0.5.0",
+  "version": "0.6.0",
   "description": "Persistent recall and pre-action compass for Claude Code. Local-only, SQLite-backed.",
   "license": "Apache-2.0",
   "author": "Anthony Vasquez Sr. (templetwo)",
@@ -20,6 +20,7 @@
     "serve": "node mcp/server.js --transport sse --port 3742",
     "rebuild": "npm rebuild better-sqlite3",
     "doctor": "node scripts/doctor.js",
+    "policy-check": "node scripts/check-policy-diff.js",
     "redact-sweep": "node scripts/redact-sweep.js"
   }
 }

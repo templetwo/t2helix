@@ -1,0 +1,13 @@
+{
+  "version": "1.0",
+  "description": "Project-local policy extensions. Rules here are ADDITIVE — they extend the bundled rules and cannot remove or downgrade bundled WITNESS/PAUSE rules. Commit this file to git to make policy travel with the repo.",
+  "rules": [
+    {
+      "id": "t2helix-protect-chronicle-db",
+      "classification": "WITNESS",
+      "tool": "Bash",
+      "pattern": "rm\\s+.*chronicle\\.db",
+      "reason": "Do not force-delete the chronicle DB directly. Back it up first: run `npm run doctor` to verify state, use db.backup() for a consistent snapshot."
+    }
+  ]
+}

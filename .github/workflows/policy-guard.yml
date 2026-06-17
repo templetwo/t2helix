@@ -1,0 +1,24 @@
+name: policy-guard
+
+on:
+  pull_request:
+    paths:
+      - '.t2helix/policy.json'
+
+jobs:
+  check-policy-diff:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: 'npm'
+
+      - run: npm ci
+
+      - name: Check policy diff (fail if PR loosens boundaries)
+        run: node scripts/check-policy-diff.js --base origin/${{ github.base_ref }}
