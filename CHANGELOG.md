@@ -3,6 +3,59 @@
 All notable changes to t2helix are documented here. Format loosely follows
 [Keep a Changelog](https://keepachangelog.com/); versioning is [SemVer](https://semver.org/).
 
+## [Unreleased] — Error-resolution atlas loader
+
+A curated atlas of common error→fix pairs, loaded into the chronicle as
+first-class recallable knowledge. The system already *detects* failure
+(`lib/outcome.js` recognizes `Traceback` / `SyntaxError` / `TypeError` /
+`ModuleNotFoundError` / `AssertionError` / `fatal:`); the one gap was that it
+could not yet say *how to fix* what it detected. This fills that gap.
+
+### Added
+- **`lib/atlas.js`** — parse + fingerprint + import logic for a JSONL atlas of
+  `{pattern, resolution}` entries. Loads each as a `domain:'error-fix'`,
+  `layer:'ground_truth'` insight **through the existing `record()` path**, so
+  `secrets.scrub()` and the `insights_fts` mirror trigger fire automatically — no
+  new table, no new write path, no second native-module surface. Idempotent: each
+  entry carries a content-derived `fp:<12hex>` tag and a re-run skips any
+  fingerprint already present.
+- **`scripts/import-atlas.js`** — CLI (`npm run import-atlas`). Mirrors
+  `redact-sweep`: `--file <atlas.jsonl>`, `--data-dir <dir>`, `--dry-run`, and the
+  same refuse-the-bare-fallback safety so the atlas can't be loaded into the empty
+  `~/.t2helix-data` standalone dir by accident. Append-only and non-destructive.
+- **`test/import-atlas.js`** — 9 tests (parse/validation, stable fingerprint,
+  canonical shape, idempotent re-import, scrub-on-write, recall visibility,
+  dry-run writes nothing). Wired into `npm test`.
+
+### Design (settled, not re-litigated)
+- **Storage = the insights tier, not a parallel `error_atlas` table.** A parallel
+  table would skip `scrub()`, skip the FTS triggers, be invisible to `recall()` +
+  the memory→compass coupling, and double the `better-sqlite3` native surface (the
+  system's one known silent-failure landmine). The insights tier gives the same
+  millisecond FTS lookup with none of that.
+- **`error-fix` is a non-meta domain.** Unlike `method` (META, surfaced only via
+  the targeted slug lookup), error-fix is reference content that should surface via
+  **normal `recall()`** when a prompt carries matching error tokens. The pattern
+  text leads the insight content so its tokens land in FTS — wildcards (`*`) are
+  FTS punctuation and drop out of tokenization harmlessly.
+- **Pre-promoted, no `method_candidates` quarantine.** The atlas entries are
+  human-curated and pre-vouched by deliberate authorship, so they load directly
+  into the ground_truth tier in one reviewed batch (the human-promotion bottleneck
+  satisfied once, not 147 times). The Stop-hook auto-distill path for *machine*
+  guesses still routes through quarantine + `promote_method`, unchanged.
+- **Authority unchanged.** The PostToolUse hook stays record-only and silent; no
+  hard-block was added. Fixes surface via `recall()` and the existing
+  `coupling.escalateByMemory()` (OPEN→PAUSE only) — steering authority stays in
+  compass/coupling so every gate decision still lands in `compass_log`.
+
+### Deferred (follow-up)
+- **Auto-surface at failure time.** Today an error-fix entry surfaces when its
+  tokens appear in a prompt (paste a traceback → the fix recalls). Wiring
+  PostToolUse `outcome:failure` → recall the matching error-fix → inject the
+  resolution is additive and stays within the record-only/coupling authority model
+  (no hook hard-block). Pattern wildcards may want a normalization/LIKE pass to
+  complement FTS-token matching for the variable spans.
+
 ## [0.9.1] — Pre-merge hardening (license + dashboard security + scrub invariant)
 
 Hardening pass on the feature-complete v0.9.0, driven by an adversarial pre-merge

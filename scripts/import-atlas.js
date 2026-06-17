@@ -1,0 +1,110 @@
+#!/usr/bin/env node
+'use strict';
+
+// scripts/import-atlas.js — load a curated error-resolution atlas (JSONL of
+// {pattern, resolution}) into the chronicle as domain:'error-fix' ground_truth
+// insights, via the normal record() write path so secrets.scrub() and the
+// insights_fts mirror fire automatically. Idempotent: re-running skips entries
+// already loaded (fingerprint match), so a partial/interrupted run is safe to
+// repeat. Append-only and non-destructive — no existing row is rewritten, hence
+// no backup step (unlike redact-sweep).
+//
+// Usage:
+//   node scripts/import-atlas.js --file <atlas.jsonl> --data-dir <dir>
+//   node scripts/import-atlas.js --file <atlas.jsonl> --dry-run    # preview, write nothing
+//   T2HELIX_DATA_DIR=<dir> node scripts/import-atlas.js --file <atlas.jsonl>
+//
+// data-dir resolution mirrors redact-sweep: a real (non-dry) run REFUSES to
+// proceed without an explicit --data-dir / T2HELIX_DATA_DIR / CLAUDE_PLUGIN_DATA,
+// so the atlas can't be silently loaded into the standalone ~/.t2helix-data
+// fallback instead of the live plugin chronicle, typically:
+//   ~/.claude/plugins/data/t2helix-templetwo-t2helix/
+
+const fs = require('fs');
+
+const argv = process.argv.slice(2);
+const DRY_RUN = argv.includes('--dry-run');
+function argValue(flag) {
+  const i = argv.indexOf(flag);
+  return i !== -1 ? argv[i + 1] : null;
+}
+
+const fileArg = argValue('--file');
+// Capture whether the operator pointed us somewhere explicitly BEFORE mutating
+// the env (same ordering as redact-sweep), so we can refuse a bare run against
+// the fallback dir.
+const hadEnvDir = !!(process.env.T2HELIX_DATA_DIR || process.env.CLAUDE_PLUGIN_DATA);
+const dirFlag = argValue('--data-dir');
+if (dirFlag) process.env.T2HELIX_DATA_DIR = dirFlag;
+const EXPLICIT_DIR = hadEnvDir || !!dirFlag;
+
+const ch = require('../lib/chronicle');
+const atlas = require('../lib/atlas');
+
+function main() {
+  if (!fileArg) {
+    console.error('import-atlas: --file <atlas.jsonl> is required');
+    process.exitCode = 2;
+    return;
+  }
+  if (!fs.existsSync(fileArg)) {
+    console.error(`import-atlas: file not found: ${fileArg}`);
+    process.exitCode = 2;
+    return;
+  }
+
+  console.log(`T2Helix import-atlas ${DRY_RUN ? '(DRY RUN)' : ''}`);
+  console.log(`  source   : ${fileArg}`);
+  console.log(`  data dir : ${ch.dataDir()}`);
+  console.log(`  database : ${ch.dbPath()}`);
+
+  if (!DRY_RUN && !EXPLICIT_DIR) {
+    console.error('\n  REFUSING to import: no explicit data dir.');
+    console.error('  A bare run resolves to the standalone fallback (~/.t2helix-data), almost never');
+    console.error('  the live plugin chronicle. Re-run with the chronicle you mean, e.g.:');
+    console.error('    node scripts/import-atlas.js --file <atlas.jsonl> \\');
+    console.error('      --data-dir "$HOME/.claude/plugins/data/t2helix-templetwo-t2helix"');
+    console.error('  (or add --dry-run to preview this path read-only).');
+    process.exitCode = 2;
+    return;
+  }
+
+  const text = fs.readFileSync(fileArg, 'utf8');
+  const { records, errors } = atlas.parseAtlas(text);
+  if (errors.length) {
+    console.log(`  parse    : ${records.length} valid, ${errors.length} skipped (malformed):`);
+    for (const e of errors.slice(0, 10)) console.log(`             line ${e.line}: ${e.reason}`);
+    if (errors.length > 10) console.log(`             … and ${errors.length - 10} more`);
+  } else {
+    console.log(`  parse    : ${records.length} valid entries, 0 malformed`);
+  }
+  if (!records.length) {
+    console.log('  (nothing to import)');
+    return;
+  }
+
+  const { counts, dropped } = atlas.importAtlas({ ch, records, dryRun: DRY_RUN });
+  const verb = DRY_RUN ? 'would insert' : 'inserted';
+  console.log(`  ${verb.padEnd(12)}: ${counts.inserted}`);
+  console.log(`  ${'skipped'.padEnd(12)}: ${counts.skipped} (already present)`);
+  if (counts.dropped) {
+    console.log(`  ${'dropped'.padEnd(12)}: ${counts.dropped} (scrub failed — NOT persisted):`);
+    for (const d of dropped.slice(0, 10)) console.log(`             ${d.fp}  ${String(d.pattern).slice(0, 60)}`);
+  }
+
+  if (!DRY_RUN) {
+    const total = ch.db().prepare(`SELECT count(*) AS n FROM insights WHERE domain = ?`).get(atlas.ATLAS_DOMAIN).n;
+    console.log(`  verify   : ${total} error-fix insight(s) now in the chronicle`);
+  }
+  ch.close();
+}
+
+try {
+  main();
+} catch (e) {
+  console.error(`import-atlas failed: ${e.message}`);
+  if (e && e.code === 'T2HELIX_DRIVER_UNAVAILABLE') {
+    console.error('Run `npm run rebuild` to fix the native binding, then re-run (idempotent).');
+  }
+  process.exit(1);
+}

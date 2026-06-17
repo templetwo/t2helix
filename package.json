@@ -16,8 +16,9 @@
     "smoke": "node test/smoke.js",
     "regression": "node test/regression.js",
     "integration": "node test/integration.js",
-    "test": "node test/smoke.js && node test/regression.js && node test/integration.js && node test/sse-contract.js",
+    "test": "node test/smoke.js && node test/regression.js && node test/integration.js && node test/sse-contract.js && node test/import-atlas.js",
     "sse-contract": "node test/sse-contract.js",
+    "test:import-atlas": "node test/import-atlas.js",
     "serve": "node mcp/server.js --transport sse --port 3742",
     "rebuild": "npm rebuild better-sqlite3",
     "doctor": "node scripts/doctor.js",
@@ -26,6 +27,7 @@
     "import-manifest": "node scripts/import.js",
     "install-commands": "node scripts/install-commands.js",
     "dashboard": "node dashboard/server.js",
-    "redact-sweep": "node scripts/redact-sweep.js"
+    "redact-sweep": "node scripts/redact-sweep.js",
+    "import-atlas": "node scripts/import-atlas.js"
   }
 }
