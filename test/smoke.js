@@ -1723,6 +1723,25 @@ test('manifest: importManifest --dry-run does not write', () => {
   assert.strictEqual(countBefore, countAfter, 'dry-run must not change method count');
 });
 
+test('manifest: importManifest scrubs credentials in externally-sourced tags (#10)', () => {
+  // A manifest is untrusted input; record() scrubs content but stores tags raw,
+  // so import must scrub each tag at the call site or a credential survives.
+  const FAKE = 'ghp_' + 'c'.repeat(36); // github-token shape
+  const content = `[method] tag-scrub-method-${Date.now()}\n\nSteps: x\n\nAcceptance: imported tags are scrubbed`;
+  const mal = {
+    manifest_version: MANIFEST_VERSION,
+    rules: [],
+    promoted_methods: [{ id: 1, content, tags: ['legit', `leaked:${FAKE}`] }]
+  };
+  const result = importManifest(mal);
+  assert.strictEqual(result.errors.length, 0, `import must not error: ${JSON.stringify(result.errors)}`);
+  const hit = ch.getMethodInsights().find(x => x.content === content);
+  assert.ok(hit, 'imported method must be present');
+  const tagsStr = JSON.stringify(hit.tags);
+  assert.ok(!tagsStr.includes(FAKE), 'raw credential must NOT persist in imported tags');
+  assert.ok(/\[REDACTED:github-token:/.test(tagsStr), 'imported tag credential must be fingerprinted');
+});
+
 // ── getCompassSince — Item 6 (v0.9.0 dashboard cursor) ──────────────────────
 
 test('getCompassSince: returns empty array when no rows exist', () => {
