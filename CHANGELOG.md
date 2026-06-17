@@ -3,6 +3,27 @@
 All notable changes to t2helix are documented here. Format loosely follows
 [Keep a Changelog](https://keepachangelog.com/); versioning is [SemVer](https://semver.org/).
 
+## [0.8.0] — Audit→Review→Promote→Reuse slash commands
+
+Exposes the full method loop as five user-invokable Claude Code slash commands,
+installed via `npm run install-commands` into `~/.claude/commands/t2helix/`.
+
+### Added
+- **`commands/audit-queue.md`** — `/t2helix:audit-queue`: list all pending
+  method candidates with shape, acceptance criteria, and next-action hints.
+- **`commands/promote-method.md`** — `/t2helix:promote-method <id>`: show
+  candidate details, confirm, then call `promote_method`.
+- **`commands/dismiss-method.md`** — `/t2helix:dismiss-method <id>`: show
+  candidate details, confirm, then call `dismiss_method_candidate`.
+- **`commands/recall-audit.md`** — `/t2helix:recall-audit [WITNESS|PAUSE]`:
+  compass audit trail — PAUSE/WITNESS history with rule + reason + timestamp;
+  optional classification filter.
+- **`commands/recall-method.md`** — `/t2helix:recall-method <query>`: search
+  the trusted method store by keyword/slug; the Reuse step of the loop.
+- **`scripts/install-commands.js`** — copies commands to
+  `~/.claude/commands/t2helix/`; `--uninstall` removes them.
+- `npm run install-commands` script alias.
+
 ## [0.7.0] — Model Swap Test + Manifest Export
 
 Proves the same 13-tool contract over SSE as over stdio; adds a published
