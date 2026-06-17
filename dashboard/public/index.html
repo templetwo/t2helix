@@ -104,6 +104,13 @@ function fmt(ts) {
   return d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' });
 }
 
+function esc(s) {
+  if (!s) return '';
+  return String(s)
+    .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;').replace(/'/g, '&#39;');
+}
+
 function truncate(s, n) {
   if (!s) return '';
   return s.length > n ? s.slice(0, n) + '…' : s;
@@ -120,11 +127,11 @@ function renderEntry(row) {
   el.className = 'entry';
   el.dataset.cls = row.classification;
   el.innerHTML = `
-    <span class="badge badge-${row.classification}">${row.classification}</span>
+    <span class="badge badge-${row.classification}">${esc(row.classification)}</span>
     <div class="entry-body">
-      <div><span class="entry-tool">${row.tool_name || '?'}</span></div>
-      <div class="entry-summary">${truncate(row.action_summary, 120)}</div>
-      ${row.rule_matched ? `<div class="entry-rule">rule: ${row.rule_matched}${row.reason ? ' — ' + truncate(row.reason, 80) : ''}</div>` : ''}
+      <div><span class="entry-tool">${esc(row.tool_name || '?')}</span></div>
+      <div class="entry-summary">${esc(truncate(row.action_summary, 120))}</div>
+      ${row.rule_matched ? `<div class="entry-rule">rule: ${esc(row.rule_matched)}${row.reason ? ' — ' + esc(truncate(row.reason, 80)) : ''}</div>` : ''}
     </div>
     <div class="entry-time">${fmt(row.occurred_at)}</div>
   `;
@@ -202,11 +209,11 @@ async function loadCandidates() {
     }
     panel.innerHTML = candidates.map(c => `
       <div class="card">
-        <div class="card-title">#${c.id} — ${c.shape}</div>
-        <div class="card-body">${c.acceptance || '(no criteria)'}\n\n${(c.steps || '').slice(0, 200)}</div>
+        <div class="card-title">#${esc(String(c.id))} — ${esc(c.shape)}</div>
+        <div class="card-body">${esc(c.acceptance || '(no criteria)')}\n\n${esc((c.steps || '').slice(0, 200))}</div>
         <div class="card-footer">
           <span>created ${fmt(c.created_at)}</span>
-          <span>status: ${c.status}</span>
+          <span>status: ${esc(c.status)}</span>
         </div>
       </div>
     `).join('');
@@ -221,7 +228,7 @@ async function loadInsights() {
     const r = await fetch('/api/state');
     const state = await r.json();
     if (state.goal) {
-      panel.innerHTML = `<div class="card"><div class="card-title">Goal</div><div class="card-body">${state.goal.goal}</div></div>`;
+      panel.innerHTML = `<div class="card"><div class="card-title">Goal</div><div class="card-body">${esc(state.goal.goal)}</div></div>`;
     }
     const items = state.recent_insights || [];
     if (items.length === 0) {
@@ -230,8 +237,8 @@ async function loadInsights() {
     }
     panel.innerHTML += items.map(i => `
       <div class="card">
-        <div class="card-title">#${i.id} [${i.layer || 'hypothesis'}] ${i.domain ? '· ' + i.domain : ''}</div>
-        <div class="card-body">${i.snippet || i.content || ''}</div>
+        <div class="card-title">#${esc(String(i.id))} [${esc(i.layer || 'hypothesis')}] ${i.domain ? '· ' + esc(i.domain) : ''}</div>
+        <div class="card-body">${esc(i.snippet || i.content || '')}</div>
         <div class="card-footer"><span>${fmt(i.created_at)}</span></div>
       </div>
     `).join('');

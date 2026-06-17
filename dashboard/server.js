@@ -72,7 +72,10 @@ const server = http.createServer((req, res) => {
   if (req.method === 'GET' && (pathname === '/' || pathname === '/dashboard')) {
     try {
       const html = fs.readFileSync(HTML_FILE, 'utf8');
-      res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
+      res.writeHead(200, {
+        'Content-Type': 'text/html; charset=utf-8',
+        'Content-Security-Policy': "default-src 'self'; style-src 'self' 'unsafe-inline'; script-src 'self' 'unsafe-inline'; connect-src 'self'"
+      });
       res.end(html);
     } catch (e) {
       res.writeHead(500).end(`Dashboard page not found: ${e.message}`);
@@ -85,8 +88,7 @@ const server = http.createServer((req, res) => {
     res.writeHead(200, {
       'Content-Type': 'text/event-stream',
       'Cache-Control': 'no-cache',
-      Connection: 'keep-alive',
-      'Access-Control-Allow-Origin': '*'
+      Connection: 'keep-alive'
     });
     res.write(':\n\n'); // comment to establish the connection
     sseClients.add(res);
@@ -107,7 +109,7 @@ const server = http.createServer((req, res) => {
     try {
       const sessionId = ch.readCurrentSession();
       const state = sessionId ? ch.getState(sessionId) : { goal: null, open_threads: [], recent_insights: [] };
-      res.writeHead(200, { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': '*' });
+      res.writeHead(200, { 'Content-Type': 'application/json' });
       res.end(JSON.stringify(state));
     } catch (e) {
       res.writeHead(500, { 'Content-Type': 'application/json' });
@@ -120,7 +122,7 @@ const server = http.createServer((req, res) => {
   if (req.method === 'GET' && pathname === '/api/candidates') {
     try {
       const candidates = ch.listMethodCandidates({ limit: 50 });
-      res.writeHead(200, { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': '*' });
+      res.writeHead(200, { 'Content-Type': 'application/json' });
       res.end(JSON.stringify({ candidates }));
     } catch (e) {
       res.writeHead(500, { 'Content-Type': 'application/json' });
@@ -132,7 +134,7 @@ const server = http.createServer((req, res) => {
   res.writeHead(404).end('Not found');
 });
 
-server.listen(PORT, () => {
+server.listen(PORT, '127.0.0.1', () => {
   const actualPort = server.address().port;
   process.stderr.write(`T2Helix dashboard listening on http://localhost:${actualPort}\n`);
   process.stdout.write(`Open http://localhost:${actualPort} in your browser\n`);
