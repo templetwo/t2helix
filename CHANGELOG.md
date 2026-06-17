@@ -3,6 +3,49 @@
 All notable changes to t2helix are documented here. Format loosely follows
 [Keep a Changelog](https://keepachangelog.com/); versioning is [SemVer](https://semver.org/).
 
+## [0.9.1] — Pre-merge hardening (license + dashboard security + scrub invariant)
+
+Hardening pass on the feature-complete v0.9.0, driven by an adversarial pre-merge
+review. No new capability: it corrects the license text, locks the dashboard to
+loopback, and closes the one real break of the four-scrub-chokepoint invariant.
+
+### Security
+- **Dashboard is loopback-only.** `dashboard/server.js` now binds `127.0.0.1`
+  explicitly (was the Node default `0.0.0.0`/`::`, reachable on every interface —
+  LAN, Tailscale, any port-forward). The `localhost` startup log is now true.
+- **Dashboard CORS removed.** Dropped `Access-Control-Allow-Origin: *` from
+  `/events`, `/api/state`, `/api/candidates`; same-origin is correct for a
+  loopback developer tool, closing drive-by cross-origin reads of chronicle content.
+- **Dashboard stored-XSS closed.** `dashboard/public/index.html` HTML-escapes
+  (`esc()`) every chronicle field rendered via `innerHTML` (action summaries,
+  goal/insight/candidate text); a `Content-Security-Policy` header was added.
+- **Manifest import scrubs tags.** `record()` scrubs content but stores tags raw
+  (tags are controlled-vocab on every internal write path); manifest import sourced
+  tags externally and wrote them unscrubbed — the one place a credential could
+  bypass the four scrub chokepoints. Import now scrubs each tag at the call site
+  via `secrets.scrub`; a scrub throw drops the write, never persists raw. +1
+  regression test (`smoke`).
+
+### Fixed
+- **`LICENSE` is now verbatim Apache-2.0.** The v0.5.0 relicense (and a first
+  hand-patch) shipped a paraphrased TERMS body — dropped MERCHANTABILITY from the
+  §7 disclaimer, `contract` → `strict liability` and `consequential` → `exemplary`
+  in §8, a grammatically broken §1 "Contribution" definition, and a removed §4
+  paragraph. The whole TERMS block was replaced with the canonical apache.org text;
+  the filled APPENDIX/copyright (Anthony Vasquez Sr. / The Temple of Two) is
+  preserved. Acceptance: TERMS-region diff against canonical returns zero lines.
+
+### Changed
+- `package.json` — version `0.9.0 → 0.9.1`.
+- Tests: **+1** (smoke 154 → 155); full suite **235** (smoke 155 + regression 52 +
+  integration 19 + sse-contract 9), all green.
+
+### Deferred (non-blocking, tracked for a later patch)
+- `doctor` data-dir resolution / false-GREEN honesty and read-only diagnosis.
+- Manifest method provenance stamp (`source:imported`) and dedup normalization.
+- Policy-as-code: assert the bundled WITNESS floor as non-removable in code, and
+  extend the `policy-guard` CI gate to diff the bundled `compass-rules.json`.
+
 ## [0.9.0] — Local real-time dashboard
 
 Zero-hook standalone HTTP server on port 3743. Tail-polls `compass_log` every
