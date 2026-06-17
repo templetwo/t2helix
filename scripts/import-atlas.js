@@ -91,8 +91,12 @@ function main() {
   console.log(`  ${verb.padEnd(12)}: ${counts.inserted}`);
   console.log(`  ${'skipped'.padEnd(12)}: ${counts.skipped} (already present)`);
   if (counts.dropped) {
-    console.log(`  ${'dropped'.padEnd(12)}: ${counts.dropped} (scrub failed — NOT persisted):`);
-    for (const d of dropped.slice(0, 10)) console.log(`             ${d.fp}  ${String(d.pattern).slice(0, 60)}`);
+    // Print ONLY the fingerprint. A row drops when scrub throws on it, so its raw
+    // text may contain the secret that tripped the drop — echoing the pattern here
+    // would leak to stdout/logs the very secret the DB-drop just protected. The fp
+    // is enough to locate the offending line in the source file.
+    console.log(`  ${'dropped'.padEnd(12)}: ${counts.dropped} (scrub failed — NOT persisted; fingerprints only):`);
+    for (const d of dropped.slice(0, 10)) console.log(`             ${d.fp}`);
   }
 
   if (!DRY_RUN) {

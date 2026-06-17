@@ -31,6 +31,7 @@ Each entry becomes one insight, written through the **existing** `record()` path
 | `layer` | `ground_truth` |
 | `tags` | `['error-fix', 'source:atlas', 'fp:<12hex>']` |
 | `intensity` | `0.8` |
+| `created_at` | `0` (backdated — zero recency weight, see Matching) |
 
 Three settled decisions:
 
@@ -81,6 +82,14 @@ from a partial one, in keeping with the "make dropped writes visible" ethos.
 Today: an error-fix entry surfaces when its tokens appear in a prompt — paste a
 traceback and `recall()` returns the fix via FTS token overlap. This works the
 moment the atlas is loaded, with zero new wiring.
+
+**Recency weight is deliberately zero.** `recall()` ranks on `-(bm25) +
+recencyBoost`. If the atlas loaded with a normal `created_at`, all 147 entries
+would carry `recencyBoost ≈ 1.0` and crowd genuinely-recent user notes out of the
+top slots on any weak common-word overlap (`install`, `setup`, `git`). Entries are
+therefore written with `created_at = 0`, so `recencyBoost` is 0: a strong
+error-token match still ranks high (its bm25 term dominates), but a generic query
+never pulls an atlas entry up on recency alone.
 
 Deferred (additive follow-up): trigger the lookup automatically on PostToolUse
 `outcome:failure` and inject the resolution. This stays within the existing

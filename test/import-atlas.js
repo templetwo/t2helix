@@ -138,6 +138,45 @@ test('importAtlas: dry-run reports would-insert but writes nothing', () => {
   assert.strictEqual(after, before, 'dry-run must not write any row');
 });
 
+// ── Recall hygiene: backdated created_at (review-2 finding 1) ──────────────────
+
+test('importAtlas: imported rows are backdated to zero recency weight', () => {
+  const row = ch.db().prepare(`SELECT created_at FROM insights WHERE domain='error-fix' LIMIT 1`).get();
+  assert.strictEqual(row.created_at, 0, 'atlas insights carry the backdated sentinel created_at');
+});
+
+test('importAtlas: backdating keeps atlas OUT of the top slot on a generic shared-word query', () => {
+  // a genuinely-recent user note sharing one common word ("setup") with an atlas entry
+  ch.record({ session_id: 'user-sess', content: 'remember to setup the deploy pipeline next sprint', domain: 'work', layer: 'ground_truth' });
+  const { records } = atlas.parseAtlas(JSON.stringify({ pattern: 'EnvError: missing config', resolution: 'Run the setup script to populate environment variables before launch.' }));
+  atlas.importAtlas({ ch, records });
+  const hits = ch.recall({ query: 'setup' });
+  assert.ok(hits.some(h => h.domain === 'work'), 'the fresh user note is recalled');
+  assert.notStrictEqual(hits[0].domain, 'error-fix',
+    'a backdated atlas entry must not outrank a fresh user note on a weak common-word overlap');
+});
+
+test('importAtlas: a STRONG error-token query still surfaces the atlas entry (backdating did not break matching)', () => {
+  const hits = ch.recall({ query: 'EnvError missing config' });
+  assert.ok(hits.some(h => h.domain === 'error-fix' && h.content.includes('setup script')),
+    'a specific error query still recalls the fix despite zero recency weight');
+});
+
+// ── Dry-run / real parity on intra-file duplicates (review-2 finding 3) ─────────
+
+test('importAtlas: dry-run matches the real run on intra-file duplicates', () => {
+  const dup = JSON.stringify({ pattern: 'DupErr: duplicated line', resolution: 'the same fix twice' });
+  const { records } = atlas.parseAtlas(dup + '\n' + dup); // two identical lines
+  const dr = atlas.importAtlas({ ch, records, dryRun: true });
+  assert.strictEqual(dr.counts.inserted, 1, 'dry-run dedups the in-file duplicate (would insert 1, not 2)');
+  assert.strictEqual(dr.counts.skipped, 1);
+  const rr = atlas.importAtlas({ ch, records }); // real run agrees
+  assert.strictEqual(rr.counts.inserted, 1);
+  assert.strictEqual(rr.counts.skipped, 1);
+  const n = ch.db().prepare(`SELECT count(*) AS n FROM insights WHERE content LIKE '%DupErr%'`).get().n;
+  assert.strictEqual(n, 1, 'exactly one row for the duplicated entry');
+});
+
 // ── CLI exit-code contract (review findings 1 + 3): exit 0 ONLY on a clean run ──
 
 test('CLI: clean load exits 0 and loads the valid subset', () => {

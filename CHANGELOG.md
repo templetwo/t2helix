@@ -23,9 +23,32 @@ could not yet say *how to fix* what it detected. This fills that gap.
   `redact-sweep`: `--file <atlas.jsonl>`, `--data-dir <dir>`, `--dry-run`, and the
   same refuse-the-bare-fallback safety so the atlas can't be loaded into the empty
   `~/.t2helix-data` standalone dir by accident. Append-only and non-destructive.
-- **`test/import-atlas.js`** — 14 tests (parse/validation, stable fingerprint,
+- **`test/import-atlas.js`** — 18 tests (parse/validation, stable fingerprint,
   canonical shape, idempotent re-import, scrub-on-write, recall visibility,
-  dry-run writes nothing, and the CLI exit-code contract). Wired into `npm test`.
+  dry-run writes nothing, backdated-recency non-pollution, dry-run/real parity on
+  duplicates, and the CLI exit-code contract). Wired into `npm test`.
+
+### Recall hygiene (second pre-merge review — findings 1–4)
+- **Atlas entries carry zero recency weight (finding 1, Medium).** `recall()` ranks
+  on `-(bm25) + recencyBoost`; loading 147 entries at the current time gave each a
+  `recencyBoost ≈ 1.0` that would crowd genuinely-recent user notes out of the top
+  slots on any weak common-word overlap. Entries are now written with `created_at
+  = 0` (recencyBoost → 0): a strong error-token match still ranks high, a generic
+  query no longer rides a recency bump. `record()` gained an optional internal
+  `created_at` param (default `Date.now()`, not exposed via the MCP tool) so the
+  fix keeps the scrub chokepoint and the append-only invariant intact — no
+  post-insert UPDATE, no INSERT that bypasses `record()`.
+- **No secret leak to stdout on a dropped row (finding 2).** A row drops when
+  `scrub` throws, so its raw text may hold the secret that tripped the drop. The
+  CLI dropped-row report and the `importAtlas` return value now carry the
+  fingerprint only — never the pattern/content.
+- **Dry-run matches the real run on intra-file duplicates (finding 3).** An
+  in-memory seen-set dedups within a run in both modes, so `--dry-run` predicts the
+  real insert/skip counts exactly.
+- **Idempotency check uses the session index (finding 4).** `fingerprintExists`
+  now filters by `session_id = 'atlas-import'`, so the lookup rides
+  `idx_insights_session` instead of a full table scan — and the substring tag match
+  can only ever match atlas rows.
 
 ### Honesty of surface (pre-merge review findings 1 + 3)
 - **Exit code reflects partial loads.** The CLI now exits `1` (not `0`) when any
