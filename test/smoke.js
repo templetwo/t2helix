@@ -1513,6 +1513,25 @@ test('getSessionActions: returns this session\'s session-action rows WITH parsed
   assert.ok(Array.isArray(acts[0].tags) && acts[0].tags.includes('outcome:success'), 'tags parsed to an array');
 });
 
+// ── health() — Item 2 (v0.5.x fail-loud + doctor) ───────────────────────────
+
+test('health: returns GREEN when driver + DB + schema are all operational', () => {
+  // ch.db() was called at top of this suite, so the DB is open and schema applied.
+  const r = ch.health();
+  assert.strictEqual(r.driver_ok, true, 'driver loaded');
+  assert.strictEqual(r.db_ok, true, 'DB reachable');
+  assert.strictEqual(r.schema_ok, true, 'schema present');
+  assert.strictEqual(r.degraded, false, 'not degraded');
+  assert.strictEqual(r.hint, null, 'no hint when GREEN');
+});
+
+test('health: result carries node_version and data_dir', () => {
+  const r = ch.health();
+  assert.ok(r.node_version.startsWith('v'), 'node_version starts with v');
+  assert.ok(r.data_dir.length > 0, 'data_dir non-empty');
+  assert.ok(r.db_path.endsWith('chronicle.db'), 'db_path ends in chronicle.db');
+});
+
 ch.close();
 
 console.log(`\n${pass} passed, ${fail} failed`);

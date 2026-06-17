@@ -166,6 +166,43 @@ test('PreToolUse: broken native binding STILL gates a WITNESS command (rules sur
   assert.ok(/rm-rf/.test(r.out.hookSpecificOutput.permissionDecisionReason), 'reason names the rule');
 });
 
+// ── doctor script (Item 2 — v0.5.x fail-loud + health-check) ───────────────
+
+test('doctor: exits 0 + prints GREEN with a working chronicle', () => {
+  // Close our test DB first so the child process owns the file cleanly.
+  ch.close();
+  const res = spawnSync(
+    'node', [path.join(__dirname, '..', 'scripts', 'doctor.js')],
+    { encoding: 'utf8', env: { ...process.env } }
+  );
+  // Re-open for subsequent tests.
+  ch.db();
+  assert.strictEqual(res.status, 0, `doctor should exit 0 when healthy, got ${res.status}: ${res.stderr}`);
+  assert.ok(/GREEN/.test(res.stdout), 'stdout mentions GREEN');
+  assert.ok(!/DEGRADED/.test(res.stdout), 'stdout does not say DEGRADED');
+});
+
+test('doctor: exits non-zero + prints DEGRADED when native binding is broken', () => {
+  const BREAK = path.join(__dirname, 'fixtures', 'break-sqlite.js');
+  const res = spawnSync(
+    'node', ['--require', BREAK, path.join(__dirname, '..', 'scripts', 'doctor.js')],
+    { encoding: 'utf8', env: { ...process.env } }
+  );
+  assert.notStrictEqual(res.status, 0, 'doctor should exit non-zero when degraded');
+  assert.ok(/DEGRADED/.test(res.stdout), 'stdout reports DEGRADED');
+  assert.ok(/rebuild/.test(res.stdout), 'stdout names the remedy (npm run rebuild)');
+});
+
+test('PreToolUse: broken native binding emits the degraded warning to stderr', () => {
+  // Clear any sentinel file from a previous run so the rate-limit doesn't suppress.
+  const os = require('os');
+  try { require('fs').unlinkSync(require('path').join(os.tmpdir(), '.t2helix-driver-warn')); } catch {}
+  const r = runHookBroken({ session_id: 'int-degrade-warn', tool_name: 'Bash', tool_input: { command: 'ls' } });
+  assert.strictEqual(r.code, 0, 'still exits 0 (fail-open)');
+  assert.ok(r.stderr.includes('DEGRADED') || r.stderr.includes('better-sqlite3'),
+    `stderr should mention degradation, got: ${r.stderr}`);
+});
+
 // ── PostToolUse: outcome tagging + action chain + skip-noise ────────────────
 
 test('PostToolUse: Bash failure → session-action entry tagged outcome:failure + action:<hash>', () => {

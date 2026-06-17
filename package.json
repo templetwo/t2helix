@@ -19,6 +19,7 @@
     "test": "node test/smoke.js && node test/regression.js && node test/integration.js",
     "serve": "node mcp/server.js --transport sse --port 3742",
     "rebuild": "npm rebuild better-sqlite3",
+    "doctor": "node scripts/doctor.js",
     "redact-sweep": "node scripts/redact-sweep.js"
   }
 }

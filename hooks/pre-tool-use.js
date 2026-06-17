@@ -10,7 +10,8 @@ const {
   consumeApproval,
   createPendingConfirmation,
   recall,
-  recordCompassFire
+  recordCompassFire,
+  emitDegradedWarning
 } = require('../lib/chronicle');
 const { readStdin } = require('../lib/hook-io');
 const { escalateByMemory } = require('../lib/coupling');
@@ -44,7 +45,9 @@ async function main() {
     let has_goal = false;
     try {
       has_goal = session_id ? !!getGoal(session_id) : false;
-    } catch (_) { /* DB unavailable — gate on rules alone */ }
+    } catch (e) {
+      if (e && e.code === 'T2HELIX_DRIVER_UNAVAILABLE') emitDegradedWarning();
+    }
     result = classify({ tool_name, tool_input }, { has_goal });
   } catch (e) {
     process.stdout.write(JSON.stringify({ systemMessage: `t2helix compass error: ${e.message}` }));
@@ -69,7 +72,9 @@ async function main() {
       if (coupled && coupled.memory_escalated) {
         result = coupled;
       }
-    } catch (_) {}
+    } catch (e) {
+      if (e && e.code === 'T2HELIX_DRIVER_UNAVAILABLE') emitDegradedWarning();
+    }
   }
 
   try {
