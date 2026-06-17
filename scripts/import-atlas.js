@@ -86,17 +86,34 @@ function main() {
     return;
   }
 
-  const { counts, dropped } = atlas.importAtlas({ ch, records, dryRun: DRY_RUN });
+  const { counts, dropped, conflicts } = atlas.importAtlas({ ch, records, dryRun: DRY_RUN });
   const verb = DRY_RUN ? 'would insert' : 'inserted';
   console.log(`  ${verb.padEnd(12)}: ${counts.inserted}`);
   console.log(`  ${'skipped'.padEnd(12)}: ${counts.skipped} (already present)`);
   if (counts.dropped) {
-    // Print ONLY the fingerprint. A row drops when scrub throws on it, so its raw
-    // text may contain the secret that tripped the drop — echoing the pattern here
-    // would leak to stdout/logs the very secret the DB-drop just protected. The fp
-    // is enough to locate the offending line in the source file.
-    console.log(`  ${'dropped'.padEnd(12)}: ${counts.dropped} (scrub failed — NOT persisted; fingerprints only):`);
+    // Print ONLY the fingerprint. A row drops when scrub throws OR record() throws
+    // (e.g. content over the 100KB cap), so its raw text may contain the secret or
+    // the oversized payload that tripped the drop — echoing the pattern here would
+    // leak to stdout/logs the very thing the DB-drop just isolated. The fp is enough
+    // to locate the offending line in the source file.
+    console.log(`  ${'dropped'.padEnd(12)}: ${counts.dropped} (NOT persisted — scrub or record() threw; fingerprints only):`);
     for (const d of dropped.slice(0, 10)) console.log(`             ${d.fp}`);
+  }
+
+  if (conflicts && conflicts.length) {
+    // Surfaced, not buried: the atlas asserts >1 distinct resolution for the same
+    // error pattern. Both rows still loaded (append-only — an error can carry more
+    // than one valid fix); this WARNS so a divergence is a deliberate curation call,
+    // not a silent one. Goes to stderr (visible even when stdout is captured) and
+    // does NOT change the exit code — nothing failed to load. Prints the pattern
+    // (public error signature) truncated + the fingerprints; never the resolution
+    // text, which is the secret-bearing field.
+    console.error(`  conflicts   : ${conflicts.length} pattern(s) with DIVERGENT resolutions (all kept — review):`);
+    for (const c of conflicts.slice(0, 10)) {
+      const p = c.pattern.length > 80 ? c.pattern.slice(0, 79) + '…' : c.pattern;
+      console.error(`             ${c.count}× "${p}"  [${c.fps.join(', ')}]`);
+    }
+    if (conflicts.length > 10) console.error(`             … and ${conflicts.length - 10} more`);
   }
 
   if (!DRY_RUN) {
