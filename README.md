@@ -135,6 +135,10 @@ The hooks **fail safe**: if the binding can't load, rules-based gating (deny `rm
 - **`compass-fire` is a META domain** — excluded from default recall/getState (it was noise, and it embedded credential-shaped commands); the helix coupling reads it via `include_meta`.
 - **Retention:** `prune()` (Stop hook) bounds `compass_log` + `pending_confirmations`.
 
+## License
+
+Apache-2.0 — see [LICENSE](./LICENSE). Copyright 2026 Anthony Vasquez Sr. (The Temple of Two).
+
 **v0.1.0** — the helix couples: memory and compass feed each other end-to-end.
 
 - Five hooks: recall (UserPromptSubmit), compass (PreToolUse), action-record (PostToolUse), archive (PreCompact), synthesis (Stop)

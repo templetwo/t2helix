@@ -3,6 +3,21 @@
 All notable changes to t2helix are documented here. Format loosely follows
 [Keep a Changelog](https://keepachangelog.com/); versioning is [SemVer](https://semver.org/).
 
+## [0.5.0] — Relicense Apache-2.0
+
+Relicensed from CC BY-NC-SA 4.0 to Apache-2.0 to unblock the commercial path.
+The moat is the learning layer (promoted methods + memory→compass coupling), not the
+license. No code changes — metadata + legal text only.
+
+### Changed
+- `LICENSE` — replaced CC BY-NC-SA 4.0 text with Apache License 2.0 canonical text
+- `package.json` — `license` field changed from `"CC-BY-NC-SA-4.0"` to `"Apache-2.0"`
+- `README.md` — added License section
+
+### Added
+- `NOTICE` — attribution file carrying the Apache-2.0 copyright notice (re-homes the
+  attribution that CC's Attribution clause provided; propagated to downstream redistributors)
+
 ## [0.4.0] — Auto-Distill (Stage 3)
 
 Stage 3 closes the method loop: instead of only recording methods by hand
