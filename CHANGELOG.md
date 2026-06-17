@@ -3,6 +3,43 @@
 All notable changes to t2helix are documented here. Format loosely follows
 [Keep a Changelog](https://keepachangelog.com/); versioning is [SemVer](https://semver.org/).
 
+## [0.10.1] — Release-truth doctor + error-atlas acceptance harness
+
+Hardening and self-verification produced by dogfooding v0.10.0 against this repo.
+No behavior change to existing features; all additions are backward compatible.
+
+### Added
+- **`scripts/release-doctor.js`** (`npm run release:doctor`) — verifies the
+  project's prose claims against machine-readable sources: package ↔ CHANGELOG
+  version, README version currency, MCP tool count (static `TOOLS` registry
+  parse), hook count, test count (live or non-brittle), Node range vs `engines`,
+  error-atlas-documented, and the plugin-manifest version. Exits non-zero on any
+  drift, so stale docs become a repeatable check.
+- **`test/atlas-acceptance.js`** (15 tests, wired into `npm test`) — an explicit
+  12-case acceptance matrix for the error-atlas loader: valid minimal / dense
+  (extra fields ignored) / duplicate same-resolution / duplicate **conflicting**
+  resolution / missing pattern / missing resolution / non-string pattern /
+  non-string resolution / **huge entry** / malformed JSON / empty array + file /
+  mixed valid+invalid, plus two CLI end-to-end cases.
+
+### Fixed
+- **`lib/atlas.js` — a single oversized entry no longer aborts the whole load.**
+  `importAtlas()` now isolates a throwing `record()` (e.g. content over the 100KB
+  `MAX_CONTENT_BYTES` cap) as a counted `dropped` row (fingerprint only, no
+  content leak) instead of failing the batch and stranding the valid entries
+  after it — restoring the loader's "load the valid subset, report the rest"
+  contract.
+- **Divergent-resolution conflicts are surfaced, not silently buried.** A new
+  pure `detectConflicts()` reports same-pattern / different-resolution entries
+  (both still load — append-only, an error can have more than one valid fix); the
+  CLI warns on stderr without changing the exit code.
+- **README release-truth:** corrected the stale hardcoded test count, the
+  `npm test` suite list, and added a current-release pointer — `release:doctor`
+  now reports `STATUS: TRUE`.
+
+### Tests
+- Suite **268 green** (was 253).
+
 ## [0.10.0] — Error-resolution atlas loader
 
 A curated atlas of common error→fix pairs, loaded into the chronicle as
