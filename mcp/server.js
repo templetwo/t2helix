@@ -441,7 +441,8 @@ function startSSE() {
   });
 
   httpServer.listen(PORT, () => {
-    process.stderr.write(`T2Helix MCP (SSE) listening on http://localhost:${PORT}/sse\n`);
+    const actualPort = httpServer.address().port;
+    process.stderr.write(`T2Helix MCP (SSE) listening on http://localhost:${actualPort}/sse\n`);
   });
 
   const shutdown = () => {

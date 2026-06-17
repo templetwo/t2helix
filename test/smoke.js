@@ -1623,6 +1623,106 @@ test('health: result carries node_version and data_dir', () => {
   assert.ok(r.db_path.endsWith('chronicle.db'), 'db_path ends in chronicle.db');
 });
 
+// ── manifest — Item 4 (v0.7.0 export/import round-trip) ─────────────────────
+
+const { buildManifest, importManifest, validateManifest, MANIFEST_VERSION } = require('../lib/manifest');
+
+test('manifest: buildManifest returns required shape', () => {
+  const m = buildManifest();
+  assert.strictEqual(m.manifest_version, MANIFEST_VERSION);
+  assert.ok(typeof m.t2helix_version === 'string', 'must carry t2helix_version');
+  assert.ok(typeof m.created_at === 'string', 'must carry created_at ISO string');
+  assert.ok(Array.isArray(m.rules), 'rules must be array');
+  assert.ok(m.rules.length > 0, 'rules must be non-empty (bundled floor)');
+  assert.ok(Array.isArray(m.promoted_methods), 'promoted_methods must be array');
+  assert.ok(typeof m.audit_schema_version === 'string', 'must carry audit_schema_version');
+});
+
+test('manifest: rules each carry id and classification', () => {
+  const { rules } = buildManifest();
+  for (const r of rules) {
+    assert.ok(r.id, `rule missing id: ${JSON.stringify(r)}`);
+    assert.ok(['WITNESS', 'PAUSE', 'OPEN'].includes(r.classification),
+      `rule ${r.id} has invalid classification ${r.classification}`);
+  }
+});
+
+test('manifest: validateManifest accepts a valid manifest', () => {
+  const m = buildManifest();
+  assert.strictEqual(validateManifest(m), null);
+});
+
+test('manifest: validateManifest rejects wrong version', () => {
+  const m = { manifest_version: '99.0', rules: [], promoted_methods: [] };
+  assert.ok(validateManifest(m) !== null, 'wrong version must fail');
+});
+
+test('manifest: round-trip — export → fresh data dir → import → method present', () => {
+  // Write a promoted method into the current test DB
+  const shape = `roundtrip-method-${Date.now()}`;
+  const content = `[method] ${shape}\n\nSteps: test step\n\nAcceptance: roundtrip asserted`;
+  ch.record({ session_id: 'smoke-roundtrip', content, domain: 'method', tags: ['roundtrip'], layer: 'ground_truth' });
+
+  // Build a manifest from the current DB (should include the method we just wrote)
+  const m = buildManifest();
+  const methodInManifest = m.promoted_methods.find(x => x.content === content);
+  assert.ok(methodInManifest, 'exported manifest must include the recorded method');
+
+  // Import into a fresh data dir
+  const freshDir = fs.mkdtempSync(path.join(os.tmpdir(), 't2helix-roundtrip-'));
+  const origDataDir = process.env.T2HELIX_DATA_DIR;
+  try {
+    process.env.T2HELIX_DATA_DIR = freshDir;
+    // Bust the chronicle module cache so a fresh DB is opened
+    const freshKey = Object.keys(require.cache).find(k => k.includes('lib/chronicle'));
+    if (freshKey) delete require.cache[freshKey];
+    const freshCh = require('../lib/chronicle');
+    freshCh.db(); // initialize fresh DB
+
+    // Re-require manifest to pick up fresh chronicle
+    const manifestKey = Object.keys(require.cache).find(k => k.includes('lib/manifest'));
+    if (manifestKey) delete require.cache[manifestKey];
+    const { importManifest: freshImport } = require('../lib/manifest');
+
+    const result = freshImport(m);
+    assert.ok(result.imported >= 1, `expected ≥1 imported, got ${result.imported}`);
+    assert.strictEqual(result.errors.length, 0, 'import must have no errors');
+
+    const freshMethods = freshCh.getMethodInsights();
+    assert.ok(freshMethods.some(x => x.content === content), 'imported method must be queryable in fresh DB');
+
+    freshCh.close();
+  } finally {
+    process.env.T2HELIX_DATA_DIR = origDataDir;
+    // Restore original chronicle (bust cache again)
+    const k = Object.keys(require.cache).find(k => k.includes('lib/chronicle'));
+    if (k) delete require.cache[k];
+    // Re-open original
+    const origCh = require('../lib/chronicle');
+    origCh.db();
+    try { fs.rmSync(freshDir, { recursive: true, force: true }); } catch (_) {}
+  }
+});
+
+test('manifest: importManifest skips duplicate content', () => {
+  const shape = `dedup-method-${Date.now()}`;
+  const content = `[method] ${shape}\n\nSteps: dedup step\n\nAcceptance: skip on re-import`;
+  ch.record({ session_id: 'smoke-dedup', content, domain: 'method', tags: [], layer: 'ground_truth' });
+
+  const m = buildManifest();
+  // Import again into the same DB — should skip the already-present method
+  const result = importManifest(m);
+  assert.ok(result.skipped >= 1, `expected ≥1 skipped on re-import, got ${result.skipped}`);
+});
+
+test('manifest: importManifest --dry-run does not write', () => {
+  const m = buildManifest();
+  const countBefore = ch.getMethodInsights().length;
+  importManifest(m, { dryRun: true });
+  const countAfter = ch.getMethodInsights().length;
+  assert.strictEqual(countBefore, countAfter, 'dry-run must not change method count');
+});
+
 ch.close();
 
 console.log(`\n${pass} passed, ${fail} failed`);

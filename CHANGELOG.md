@@ -3,6 +3,44 @@
 All notable changes to t2helix are documented here. Format loosely follows
 [Keep a Changelog](https://keepachangelog.com/); versioning is [SemVer](https://semver.org/).
 
+## [0.7.0] — Model Swap Test + Manifest Export
+
+Proves the same 13-tool contract over SSE as over stdio; adds a published
+compatibility matrix; ships `t2helix export-manifest` / `import-manifest` for
+portable, round-trippable chronicle snapshots.
+
+### Added
+- **CI (`ci.yml`)** — Node 20/22/24/26 matrix runs the full suite (smoke +
+  regression + integration + **sse-contract**) on every push and PR; rebuilds
+  `better-sqlite3` for each ABI before testing.
+- **SSE contract test (`test/sse-contract.js`)** — spawns the SSE server on an
+  ephemeral port (port 0), drives the full MCP initialize handshake, then
+  asserts the same 13-tool list + core round-trips (record/recall, set_goal,
+  open_thread) that the stdio regression suite covers.
+- **Manifest export/import (`scripts/export.js`, `scripts/import.js`,
+  `lib/manifest.js`)** — `t2helix export-manifest` writes a portable JSON
+  `{ manifest_version, t2helix_version, created_at, rules, promoted_methods,
+  audit_schema_version }`; `t2helix import-manifest <file>` loads promoted
+  methods into a fresh chronicle with content-equality dedup; `--snapshot` on
+  export writes a WAL-safe `db.backup()` companion.
+- **`lib/chronicle.js: getMethodInsights()`** — new query that returns all
+  `domain='method' layer='ground_truth'` insights; used by manifest export and
+  the Audit/Review/Promote commands (item 5).
+- **Compatibility matrix (`docs/compatibility-matrix.md`)** — Node versions,
+  transports, clients, and manifest portability with CI-tested / supported
+  status annotations.
+- **Smoke round-trip tests** — 6 new tests in `test/smoke.js` covering manifest
+  shape, rule validation, export→fresh-dir→import→verify round-trip, dedup
+  on re-import, and dry-run safety.
+
+### Changed
+- `mcp/server.js` — SSE listen callback now emits `httpServer.address().port`
+  instead of the configured PORT, so `--port 0` correctly reports the OS-assigned
+  ephemeral port in the stderr "listening on" line.
+- `package.json` — version `0.6.0 → 0.7.0`; added `sse-contract`,
+  `export-manifest`, `import-manifest` scripts; `test` script extended to
+  include `sse-contract`.
+
 ## [0.5.0] — Relicense Apache-2.0
 
 Relicensed from CC BY-NC-SA 4.0 to Apache-2.0 to unblock the commercial path.
