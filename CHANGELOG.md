@@ -3,7 +3,7 @@
 All notable changes to t2helix are documented here. Format loosely follows
 [Keep a Changelog](https://keepachangelog.com/); versioning is [SemVer](https://semver.org/).
 
-## [Unreleased] — Error-resolution atlas loader
+## [0.10.0] — Error-resolution atlas loader
 
 A curated atlas of common error→fix pairs, loaded into the chronicle as
 first-class recallable knowledge. The system already *detects* failure
@@ -85,6 +85,13 @@ could not yet say *how to fix* what it detected. This fills that gap.
   resolution is additive and stays within the record-only/coupling authority model
   (no hook hard-block). Pattern wildcards may want a normalization/LIKE pass to
   complement FTS-token matching for the variable spans.
+
+### Changed
+- `package.json` — version `0.9.1 → 0.10.0` (minor: additive feature, no breaking
+  change). `record()` gained an optional internal `created_at` (default
+  `Date.now()`), not exposed on the MCP tool surface.
+- Tests: **+18** new (`test/import-atlas.js`); full suite **235 → 253**
+  (smoke 155 + regression 52 + integration 19 + sse 9 + import-atlas 18).
 
 ## [0.9.1] — Pre-merge hardening (license + dashboard security + scrub invariant)
 
