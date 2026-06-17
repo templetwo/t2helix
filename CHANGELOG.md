@@ -3,6 +3,29 @@
 All notable changes to t2helix are documented here. Format loosely follows
 [Keep a Changelog](https://keepachangelog.com/); versioning is [SemVer](https://semver.org/).
 
+## [0.9.0] — Local real-time dashboard
+
+Zero-hook standalone HTTP server on port 3743. Tail-polls `compass_log` every
+2s, pushes new rows to connected browsers over SSE. Three panels: Live Feed
+(OPEN/PAUSE/WITNESS color-coded, filter toggles, scroll-lock), Review Queue
+(method candidates), Recent Insights (goal + chronicle snapshot).
+
+### Added
+- **`dashboard/server.js`** — standalone HTTP server: GET `/` → HTML page,
+  GET `/events` → SSE tail of `compass_log`, GET `/api/state` → chronicle
+  snapshot (goal + threads + recent insights), GET `/api/candidates` → method
+  candidate queue. Zero hook changes.
+- **`dashboard/public/index.html`** — self-contained; no build step; dark
+  UI, EventSource, three-tab layout, filter toggles, 500-entry ring buffer,
+  scroll-lock for manual review.
+- **`lib/chronicle.js: getCompassSince({ since_id, limit })`** — cursor-based
+  ascending fetch used by the dashboard poll loop; returns `[]` on DB error
+  (fail-open). Initializes `lastSeenId` to current MAX(id) on start so only
+  new rows stream after the server boots.
+- **`npm run dashboard`** script alias; optional `--port` and
+  `T2HELIX_DASHBOARD_PORT` env override.
+- 3 new smoke tests for `getCompassSince` cursor monotonicity + limit.
+
 ## [0.8.0] — Audit→Review→Promote→Reuse slash commands
 
 Exposes the full method loop as five user-invokable Claude Code slash commands,

@@ -1,0 +1,246 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>T2Helix Dashboard</title>
+<style>
+  :root {
+    --bg: #0d1117;
+    --surface: #161b22;
+    --border: #30363d;
+    --text: #c9d1d9;
+    --muted: #8b949e;
+    --accent: #58a6ff;
+    --open: #3fb950;
+    --pause: #d29922;
+    --witness: #f85149;
+    --tag-bg: #1f2937;
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body { background: var(--bg); color: var(--text); font-family: 'SFMono-Regular', Consolas, monospace; font-size: 13px; }
+  header { background: var(--surface); border-bottom: 1px solid var(--border); padding: 10px 16px; display: flex; align-items: center; gap: 12px; }
+  header h1 { font-size: 15px; font-weight: 600; color: var(--accent); }
+  .status-dot { width: 8px; height: 8px; border-radius: 50%; background: var(--muted); flex-shrink: 0; }
+  .status-dot.connected { background: var(--open); }
+  #status-text { font-size: 11px; color: var(--muted); }
+  nav { display: flex; gap: 0; border-bottom: 1px solid var(--border); background: var(--surface); padding: 0 16px; }
+  nav button { background: none; border: none; border-bottom: 2px solid transparent; color: var(--muted); cursor: pointer; font-size: 12px; padding: 8px 14px; font-family: inherit; }
+  nav button.active { color: var(--text); border-bottom-color: var(--accent); }
+  .tab { display: none; height: calc(100vh - 73px); overflow: hidden; flex-direction: column; }
+  .tab.active { display: flex; }
+  .filters { padding: 8px 16px; border-bottom: 1px solid var(--border); display: flex; gap: 12px; align-items: center; font-size: 11px; color: var(--muted); flex-shrink: 0; }
+  .filters label { display: flex; align-items: center; gap: 4px; cursor: pointer; }
+  .filter-open { color: var(--open); }
+  .filter-pause { color: var(--pause); }
+  .filter-witness { color: var(--witness); }
+  #feed { flex: 1; overflow-y: auto; padding: 8px 0; }
+  .entry { padding: 6px 16px; border-bottom: 1px solid var(--border); display: flex; gap: 8px; align-items: flex-start; }
+  .entry:hover { background: var(--surface); }
+  .badge { flex-shrink: 0; font-size: 10px; font-weight: 700; padding: 2px 6px; border-radius: 4px; text-transform: uppercase; margin-top: 1px; }
+  .badge-OPEN { background: rgba(63,185,80,.15); color: var(--open); }
+  .badge-PAUSE { background: rgba(210,153,34,.15); color: var(--pause); }
+  .badge-WITNESS { background: rgba(248,81,73,.2); color: var(--witness); }
+  .entry-body { flex: 1; min-width: 0; }
+  .entry-tool { font-weight: 600; color: var(--accent); font-size: 11px; }
+  .entry-summary { color: var(--text); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 600px; }
+  .entry-rule { font-size: 11px; color: var(--muted); margin-top: 1px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 600px; }
+  .entry-time { flex-shrink: 0; font-size: 10px; color: var(--muted); white-space: nowrap; }
+  #candidates-panel, #insights-panel { flex: 1; overflow-y: auto; padding: 12px 16px; }
+  .card { background: var(--surface); border: 1px solid var(--border); border-radius: 6px; padding: 10px 12px; margin-bottom: 8px; }
+  .card-title { font-weight: 600; color: var(--accent); font-size: 12px; margin-bottom: 4px; }
+  .card-body { color: var(--muted); font-size: 11px; line-height: 1.5; white-space: pre-wrap; word-break: break-word; max-height: 80px; overflow: hidden; }
+  .card-footer { margin-top: 6px; font-size: 10px; color: var(--muted); display: flex; gap: 12px; }
+  .empty { color: var(--muted); font-size: 12px; padding: 16px 0; }
+  #scroll-lock { position: fixed; bottom: 16px; right: 16px; background: var(--accent); color: var(--bg); border: none; border-radius: 4px; padding: 6px 12px; font-size: 11px; cursor: pointer; display: none; font-family: inherit; }
+</style>
+</head>
+<body>
+<header>
+  <span class="status-dot" id="dot"></span>
+  <h1>T2Helix</h1>
+  <span id="status-text">connecting…</span>
+</header>
+<nav>
+  <button class="active" onclick="showTab('live')">Live Feed</button>
+  <button onclick="showTab('review')">Review Queue</button>
+  <button onclick="showTab('insights')">Recent Insights</button>
+</nav>
+
+<div id="live" class="tab active">
+  <div class="filters">
+    <span>Filter:</span>
+    <label class="filter-open"><input type="checkbox" id="show-open" checked> OPEN</label>
+    <label class="filter-pause"><input type="checkbox" id="show-pause" checked> PAUSE</label>
+    <label class="filter-witness"><input type="checkbox" id="show-witness" checked> WITNESS</label>
+    <span id="feed-count" style="margin-left:auto"></span>
+  </div>
+  <div id="feed"></div>
+</div>
+
+<div id="review" class="tab">
+  <div id="candidates-panel"><span class="empty">Loading…</span></div>
+</div>
+
+<div id="insights" class="tab">
+  <div id="insights-panel"><span class="empty">Loading…</span></div>
+</div>
+
+<button id="scroll-lock" onclick="toggleScrollLock()">⏸ Pause scroll</button>
+
+<script>
+const feed = document.getElementById('feed');
+const dot = document.getElementById('dot');
+const statusText = document.getElementById('status-text');
+const feedCount = document.getElementById('feed-count');
+const scrollLockBtn = document.getElementById('scroll-lock');
+
+let entries = [];
+let scrollLocked = false;
+let es;
+
+function fmt(ts) {
+  const d = new Date(ts);
+  return d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' });
+}
+
+function truncate(s, n) {
+  if (!s) return '';
+  return s.length > n ? s.slice(0, n) + '…' : s;
+}
+
+function renderEntry(row) {
+  const show = {
+    OPEN: document.getElementById('show-open').checked,
+    PAUSE: document.getElementById('show-pause').checked,
+    WITNESS: document.getElementById('show-witness').checked
+  };
+  if (!show[row.classification]) return null;
+  const el = document.createElement('div');
+  el.className = 'entry';
+  el.dataset.cls = row.classification;
+  el.innerHTML = `
+    <span class="badge badge-${row.classification}">${row.classification}</span>
+    <div class="entry-body">
+      <div><span class="entry-tool">${row.tool_name || '?'}</span></div>
+      <div class="entry-summary">${truncate(row.action_summary, 120)}</div>
+      ${row.rule_matched ? `<div class="entry-rule">rule: ${row.rule_matched}${row.reason ? ' — ' + truncate(row.reason, 80) : ''}</div>` : ''}
+    </div>
+    <div class="entry-time">${fmt(row.occurred_at)}</div>
+  `;
+  return el;
+}
+
+function rebuildFeed() {
+  feed.innerHTML = '';
+  for (const row of entries) {
+    const el = renderEntry(row);
+    if (el) feed.appendChild(el);
+  }
+  feedCount.textContent = `${feed.children.length} entries`;
+  if (!scrollLocked) feed.scrollTop = feed.scrollHeight;
+}
+
+function toggleScrollLock() {
+  scrollLocked = !scrollLocked;
+  scrollLockBtn.textContent = scrollLocked ? '▶ Resume scroll' : '⏸ Pause scroll';
+}
+
+document.getElementById('show-open').addEventListener('change', rebuildFeed);
+document.getElementById('show-pause').addEventListener('change', rebuildFeed);
+document.getElementById('show-witness').addEventListener('change', rebuildFeed);
+
+feed.addEventListener('scroll', () => {
+  const atBottom = feed.scrollTop + feed.clientHeight >= feed.scrollHeight - 10;
+  scrollLockBtn.style.display = atBottom ? 'none' : 'block';
+  if (atBottom) scrollLocked = false;
+});
+
+function connectSSE() {
+  es = new EventSource('/events');
+  es.onopen = () => {
+    dot.classList.add('connected');
+    statusText.textContent = 'live';
+  };
+  es.onerror = () => {
+    dot.classList.remove('connected');
+    statusText.textContent = 'reconnecting…';
+    setTimeout(connectSSE, 3000);
+    es.close();
+  };
+  es.addEventListener('compass', e => {
+    const row = JSON.parse(e.data);
+    entries.push(row);
+    if (entries.length > 500) entries.shift(); // cap buffer
+    const el = renderEntry(row);
+    if (el) {
+      feed.appendChild(el);
+      feedCount.textContent = `${feed.children.length} entries`;
+      if (!scrollLocked) feed.scrollTop = feed.scrollHeight;
+    }
+  });
+}
+
+// Tab management
+function showTab(name) {
+  document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
+  document.querySelectorAll('nav button').forEach(b => b.classList.remove('active'));
+  document.getElementById(name).classList.add('active');
+  event.target.classList.add('active');
+  if (name === 'review') loadCandidates();
+  if (name === 'insights') loadInsights();
+}
+
+async function loadCandidates() {
+  const panel = document.getElementById('candidates-panel');
+  try {
+    const r = await fetch('/api/candidates');
+    const { candidates } = await r.json();
+    if (!candidates || candidates.length === 0) {
+      panel.innerHTML = '<span class="empty">No pending candidates.</span>';
+      return;
+    }
+    panel.innerHTML = candidates.map(c => `
+      <div class="card">
+        <div class="card-title">#${c.id} — ${c.shape}</div>
+        <div class="card-body">${c.acceptance || '(no criteria)'}\n\n${(c.steps || '').slice(0, 200)}</div>
+        <div class="card-footer">
+          <span>created ${fmt(c.created_at)}</span>
+          <span>status: ${c.status}</span>
+        </div>
+      </div>
+    `).join('');
+  } catch (e) {
+    panel.innerHTML = `<span class="empty">Error: ${e.message}</span>`;
+  }
+}
+
+async function loadInsights() {
+  const panel = document.getElementById('insights-panel');
+  try {
+    const r = await fetch('/api/state');
+    const state = await r.json();
+    if (state.goal) {
+      panel.innerHTML = `<div class="card"><div class="card-title">Goal</div><div class="card-body">${state.goal.goal}</div></div>`;
+    }
+    const items = state.recent_insights || [];
+    if (items.length === 0) {
+      panel.innerHTML += '<span class="empty">No recent insights.</span>';
+      return;
+    }
+    panel.innerHTML += items.map(i => `
+      <div class="card">
+        <div class="card-title">#${i.id} [${i.layer || 'hypothesis'}] ${i.domain ? '· ' + i.domain : ''}</div>
+        <div class="card-body">${i.snippet || i.content || ''}</div>
+        <div class="card-footer"><span>${fmt(i.created_at)}</span></div>
+      </div>
+    `).join('');
+  } catch (e) {
+    panel.innerHTML = `<span class="empty">Error: ${e.message}</span>`;
+  }
+}
+
+connectSSE();
+</script>
+</body>
+</html>

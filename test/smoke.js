@@ -1723,6 +1723,47 @@ test('manifest: importManifest --dry-run does not write', () => {
   assert.strictEqual(countBefore, countAfter, 'dry-run must not change method count');
 });
 
+// ── getCompassSince — Item 6 (v0.9.0 dashboard cursor) ──────────────────────
+
+test('getCompassSince: returns empty array when no rows exist', () => {
+  // compass_log is empty at this point in the smoke suite
+  const rows = ch.getCompassSince({ since_id: 0 });
+  assert.ok(Array.isArray(rows), 'must return array');
+});
+
+test('getCompassSince: cursor monotonicity — new rows appear after seed', () => {
+  // Seed a compass_log row directly
+  ch.logCompass({
+    session_id: 'smoke-cursor',
+    tool_name: 'Bash',
+    action_summary: 'echo hello',
+    classification: 'OPEN',
+    rule_matched: null,
+    reason: null
+  });
+  const after = ch.getCompassSince({ since_id: 0, limit: 10 });
+  assert.ok(after.length >= 1, 'must see seeded row');
+  // Second call with the last seen id should return nothing new
+  const lastId = after[after.length - 1].id;
+  const empty = ch.getCompassSince({ since_id: lastId, limit: 10 });
+  assert.strictEqual(empty.length, 0, 'cursor must not re-deliver seen rows');
+});
+
+test('getCompassSince: respects limit', () => {
+  for (let i = 0; i < 5; i++) {
+    ch.logCompass({
+      session_id: 'smoke-limit',
+      tool_name: 'Bash',
+      action_summary: `ls -la ${i}`,
+      classification: 'OPEN',
+      rule_matched: null,
+      reason: null
+    });
+  }
+  const rows = ch.getCompassSince({ since_id: 0, limit: 2 });
+  assert.ok(rows.length <= 2, 'limit must be honored');
+});
+
 ch.close();
 
 console.log(`\n${pass} passed, ${fail} failed`);
