@@ -95,13 +95,14 @@ The stdio path (Claude Code plugin) is unaffected. Both can run simultaneously f
 ## Tests
 
 ```bash
-npm test              # smoke + regression + integration
+npm test              # smoke + regression + integration + SSE contract + atlas
 npm run smoke         # library + compass unit tests
 npm run regression    # MCP tool contract (stdio JSON-RPC)
 npm run integration   # spawns the real hooks, asserts the shipped wiring
+npm run release:doctor # check README/docs claims against the code (versions, counts, Node)
 ```
 
-Each suite runs against an isolated temp data dir. Coverage: compass rule classifications (incl. read-only-vs-mutating prod ops), chronicle CRUD, FTS similarity retrieval, session-state round-trip, `setGoal` preserve-prior, `getCompassHistory` filters, the full `pending_confirmations` lifecycle + atomic single-use enforcement, cross-session isolation, the MCP contract + argument coercion, and — in the integration suite — the live PreToolUse/PostToolUse hooks: the PAUSE override loop, fail-open on adversarial input, and fail-safe gating when the native binding is unavailable, plus (v0.2) secret redaction at the write chokepoints, compass-fire recall exclusion, redact-or-drop fail-safe, retention pruning, and an end-to-end `redact-sweep` scrub, plus (v0.3) the method store + firehose-exclusion, recall-surface selection (gate/relevance/caps/char-volume), and the boundary-active goal lifecycle + Stop per-criterion synthesis, and — (v0.4) — the auto-distill pure distiller (conservative gating), the quarantine candidate store with the never-surfaces invariant, and the promote-to-trusted / dismiss gate (incl. transactional rollback recoverability) end-to-end through the Stop hook. **203 tests total.**
+Each suite runs against an isolated temp data dir. Coverage: compass rule classifications (incl. read-only-vs-mutating prod ops), chronicle CRUD, FTS similarity retrieval, session-state round-trip, `setGoal` preserve-prior, `getCompassHistory` filters, the full `pending_confirmations` lifecycle + atomic single-use enforcement, cross-session isolation, the MCP contract + argument coercion, and — in the integration suite — the live PreToolUse/PostToolUse hooks: the PAUSE override loop, fail-open on adversarial input, and fail-safe gating when the native binding is unavailable, plus (v0.2) secret redaction at the write chokepoints, compass-fire recall exclusion, redact-or-drop fail-safe, retention pruning, and an end-to-end `redact-sweep` scrub, plus (v0.3) the method store + firehose-exclusion, recall-surface selection (gate/relevance/caps/char-volume), and the boundary-active goal lifecycle + Stop per-criterion synthesis, and — (v0.4) — the auto-distill pure distiller (conservative gating), the quarantine candidate store with the never-surfaces invariant, and the promote-to-trusted / dismiss gate (incl. transactional rollback recoverability) end-to-end through the Stop hook, plus (v0.10) the error-atlas loader acceptance matrix (parse + validation, idempotent fingerprinting, conflict surfacing, huge-entry isolation, and the CLI exit-code contract). Run `npm test` for the current total.
 
 ## Native module
 
@@ -115,6 +116,8 @@ npm run redact-sweep  # one-shot scrub of credentials that leaked into the chron
 The hooks **fail safe**: if the binding can't load, rules-based gating (deny `rm -rf /`, force-push, drop-table) still runs and you'll see a one-line "run `npm rebuild better-sqlite3`" hint instead of a crash or a silently-disabled gate.
 
 ## Status
+
+**Current release: v0.10.0** — see [CHANGELOG.md](./CHANGELOG.md) for the full v0.5.0 → v0.10.0 history: Apache-2.0 relicense, fail-loud + `doctor`, git-bound policy-as-code, model-swap CI + manifest export/import, audit→promote commands, the local real-time dashboard, and the error-resolution atlas loader (`lib/atlas.js`, `npm run import-atlas`). The highlights below cover v0.4.0 and earlier; run `npm run release:doctor` to check these docs against the code.
 
 **v0.4.0 — Auto-Distill (Stage 3).** The Stop hook now distills a method *candidate* from a successful session automatically — but because the Stop hook is a high-frequency writer, candidates are **quarantined** and surface nothing until explicitly promoted.
 
