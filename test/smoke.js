@@ -561,7 +561,7 @@ test('recall: tag filter is exact (outcome:fail does NOT match outcome:failure)'
 // entry list and assert the upgrade behavior.
 // ============================================================================
 
-const { escalateByMemory, countOutcomes, MIN_SIMILAR, FAILURE_RATIO } = require('../lib/coupling');
+const { escalateByMemory, countOutcomes, recencyWeight, MIN_SIMILAR, FAILURE_RATIO, FAILURE_HALFLIFE_HOURS, MIN_FAILURE_WEIGHT } = require('../lib/coupling');
 
 function mkEntry(id, tags) {
   return { id, tags };
@@ -649,6 +649,72 @@ test('coupling: countOutcomes returns success/failure/total/failureEntries shape
   assert.strictEqual(r.failure, 2);
   assert.strictEqual(r.total, 3);
   assert.strictEqual(r.failureEntries.length, 2);
+});
+
+// ---- recency decay (read-time, pure) ----
+// Each outcome entry's weight = e^(-k·age) with half-life FAILURE_HALFLIFE_HOURS.
+// A fixed clock makes decay deterministic. mkEntry (dateless) is the no-decay
+// back-compat case the tests above already exercise.
+const DECAY_NOW = 1700000000000;
+const HMS = 3600000;
+function mkAged(id, tags, hoursAgo) {
+  return { id, tags, created_at: DECAY_NOW - hoursAgo * HMS };
+}
+
+test('coupling/decay: recencyWeight 1.0 fresh, 0.5 at one half-life, 1.0 when undateable/future', () => {
+  assert.ok(Math.abs(recencyWeight(mkAged(1, [], 0), DECAY_NOW) - 1.0) < 1e-9, 'age 0 → 1.0');
+  assert.ok(Math.abs(recencyWeight(mkAged(1, [], FAILURE_HALFLIFE_HOURS), DECAY_NOW) - 0.5) < 1e-9, 'one half-life → 0.5');
+  assert.strictEqual(recencyWeight({ id: 1, tags: [] }, DECAY_NOW), 1.0, 'no created_at → 1.0 (not penalized)');
+  assert.strictEqual(recencyWeight({ id: 1, created_at: 'nope' }, DECAY_NOW), 1.0, 'non-numeric → 1.0');
+  assert.strictEqual(recencyWeight(mkAged(1, [], -100), DECAY_NOW), 1.0, 'future timestamp clamps to 1.0 (no inflation)');
+});
+
+test('coupling/decay: a FRESH failure cluster still escalates OPEN→PAUSE', () => {
+  const base = { classification: 'OPEN', rule_id: null, reason: null };
+  const similar = [mkAged(1, ['outcome:failure'], 0), mkAged(2, ['outcome:failure'], 1), mkAged(3, ['outcome:failure'], 2)];
+  const r = escalateByMemory(base, similar, DECAY_NOW);
+  assert.strictEqual(r.classification, 'PAUSE');
+  assert.strictEqual(r.memory_escalated, true);
+});
+
+test('coupling/decay: a purely STALE failure cluster fades (live-mass floor blocks)', () => {
+  const base = { classification: 'OPEN', rule_id: null, reason: null };
+  // 3 failures ~30 days old: weight ≈ 2^-10 each → mass ≈ 0.003 < MIN_FAILURE_WEIGHT.
+  const similar = [mkAged(1, ['outcome:failure'], 720), mkAged(2, ['outcome:failure'], 720), mkAged(3, ['outcome:failure'], 720)];
+  const r = escalateByMemory(base, similar, DECAY_NOW);
+  assert.strictEqual(r.classification, 'OPEN', 'stale failures must not warn forever');
+  assert.strictEqual(r.memory_escalated, false);
+  assert.strictEqual(r.memory_stats.total, 3, 'the raw sample is still counted');
+  assert.ok(r.memory_stats.weightedFailure < MIN_FAILURE_WEIGHT, 'decayed failure mass is below the floor');
+});
+
+test('coupling/decay: a recent SUCCESS outweighs stale failures (no escalation)', () => {
+  const base = { classification: 'OPEN', rule_id: null, reason: null };
+  // 2 failures 10 days old (≈0.099 each) vs 1 fresh success (1.0) → weighted ratio < 0.5.
+  const similar = [mkAged(1, ['outcome:failure'], 240), mkAged(2, ['outcome:failure'], 240), mkAged(3, ['outcome:success'], 0)];
+  const r = escalateByMemory(base, similar, DECAY_NOW);
+  assert.strictEqual(r.classification, 'OPEN', 'a fresh success means the action works now');
+  assert.strictEqual(r.memory_escalated, false);
+});
+
+test('coupling/decay: a recent FAILURE outweighs stale successes (escalates at raw ratio 1/3)', () => {
+  const base = { classification: 'OPEN', rule_id: null, reason: null };
+  // raw 1/3 = 0.33 would NOT escalate under flat counting; the fresh failure
+  // (1.0) vs two stale successes (≈0.099 each) flips the weighted balance.
+  const similar = [mkAged(1, ['outcome:failure'], 0), mkAged(2, ['outcome:success'], 240), mkAged(3, ['outcome:success'], 240)];
+  const r = escalateByMemory(base, similar, DECAY_NOW);
+  assert.strictEqual(r.classification, 'PAUSE', 'the only recent signal is a failure');
+  assert.strictEqual(r.memory_escalated, true);
+  assert.ok(r.reason.includes('1/3'), 'reason still reports the raw count');
+});
+
+test('coupling/decay: dateless entries behave exactly like flat counting (back-compat)', () => {
+  const base = { classification: 'OPEN', rule_id: null, reason: null };
+  // No created_at anywhere → every weight 1.0 → identical to the pre-decay policy.
+  const similar = [mkEntry(1, ['outcome:failure']), mkEntry(2, ['outcome:failure']), mkEntry(3, ['outcome:failure'])];
+  const r = escalateByMemory(base, similar, DECAY_NOW);
+  assert.strictEqual(r.classification, 'PAUSE');
+  assert.strictEqual(r.memory_escalated, true);
 });
 
 test('coupling: thresholds exported and have sensible MVP values', () => {
