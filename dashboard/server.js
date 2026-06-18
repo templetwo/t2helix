@@ -74,7 +74,11 @@ const server = http.createServer((req, res) => {
       const html = fs.readFileSync(HTML_FILE, 'utf8');
       res.writeHead(200, {
         'Content-Type': 'text/html; charset=utf-8',
-        'Content-Security-Policy': "default-src 'self'; style-src 'self' 'unsafe-inline'; script-src 'self' 'unsafe-inline'; connect-src 'self'"
+        // Dashboard-only CSP. The recall/compass engine and hooks remain fully
+        // local; this widening only affects the optional observability page:
+        // allow the Google Fonts CDN (HUD typography) and data: URIs (inline
+        // grain texture). All dynamic data still flows over connect-src 'self'.
+        'Content-Security-Policy': "default-src 'self'; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src 'self' https://fonts.gstatic.com; script-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src 'self'"
       });
       res.end(html);
     } catch (e) {
