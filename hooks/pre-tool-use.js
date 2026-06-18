@@ -135,7 +135,10 @@ async function main() {
             action_summary,
             classification: 'OPEN',
             rule_matched: result.rule_id,
-            reason: `approved via token ${approval.token} (consumed)`
+            reason: 'approved via single-use override token (consumed)',
+            // Queryable "this fire was overridden" audit signal. Store the consumed
+            // approval's row id, NOT the token value (schema.sql compass_log.user_override).
+            user_override: String(approval.id)
           });
         } catch (_) {}
         process.stdout.write(JSON.stringify({}));

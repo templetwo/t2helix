@@ -280,6 +280,23 @@ test('phase1: getCompassHistory classification filter narrows correctly', () => 
   assert.ok(pause.every(e => e.classification === 'PAUSE'), 'PAUSE filter returned non-PAUSE rows');
 });
 
+test('phase1: getCompassHistory surfaces user_override (overridden-fire audit signal)', () => {
+  const sid = 'phase1-override-' + Date.now();
+  // An approved PAUSE override re-logs as OPEN carrying the consumed approval's id.
+  ch.logCompass({
+    session_id: sid, tool_name: 'Bash', action_summary: 'ovr-' + sid,
+    classification: 'OPEN', rule_matched: 'memory:similar-failures',
+    reason: 'approved via single-use override token (consumed)', user_override: '4242'
+  });
+  const row = ch.getCompassHistory({ limit: 200 }).find(e => e.action_summary === 'ovr-' + sid);
+  assert.ok(row, 'override row should be present');
+  assert.strictEqual(row.user_override, '4242', 'user_override must round-trip through the read');
+  // A normal fire leaves the column null — the signal is unambiguous.
+  ch.logCompass({ session_id: sid, tool_name: 'Bash', action_summary: 'plain-' + sid, classification: 'WITNESS', rule_matched: 'rm-rf', reason: 'r' });
+  const plain = ch.getCompassHistory({ limit: 200 }).find(e => e.action_summary === 'plain-' + sid);
+  assert.strictEqual(plain.user_override, null, 'a non-override fire has null user_override');
+});
+
 // ============================================================================
 // Phase 2: pending_confirmations lifecycle
 // ============================================================================
