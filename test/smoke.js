@@ -1258,6 +1258,23 @@ test('query-normalize: hex addresses scrubbed; frame-flood input stays linear-ti
   assert.ok(/TypeError/.test(q) && q.length < 100, 'frames collapsed, identity kept');
 });
 
+test('query-normalize: a long suffix-less word run is linear-time in the ERROR_SIGNAL guard', () => {
+  // Worst case for ERROR_SIGNAL: one 200k-char token with no Error/Exception/
+  // Warning suffix forces the guard's leading-identifier run to backtrack from
+  // every offset. With an unbounded [\w$]* this was O(n^2) (~21s); the {0,64}
+  // bound makes it linear. The frame-flood test above only uses SHORT lines, so
+  // it never reaches this path — this case is what actually guards the claim.
+  const evil = 'A'.repeat(200000);
+  const t0 = process.hrtime.bigint();
+  const out = denoiseErrorQuery(evil);
+  const ms = Number(process.hrtime.bigint() - t0) / 1e6;
+  assert.strictEqual(out, evil, 'a non-error blob passes through unchanged');
+  assert.ok(ms < 1000, `ERROR_SIGNAL guard must be linear; took ${ms.toFixed(0)}ms (pre-fix was ~21000ms)`);
+  // Parity at scale: a real typed exception still triggers detection + collapse.
+  const typed = denoiseErrorQuery('CustomValidationError: bad input\n    at f (/a/b.js:1:2)');
+  assert.ok(/CustomValidationError/.test(typed) && !/b\.js/.test(typed), 'typed exception still detected and de-noised');
+});
+
 test('surface.selectInjection: a pasted traceback is de-noised before it hits recall()', () => {
   const prompt = [
     'ReferenceError: foo is not defined',
