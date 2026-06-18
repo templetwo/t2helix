@@ -16,7 +16,7 @@
     "smoke": "node test/smoke.js",
     "regression": "node test/regression.js",
     "integration": "node test/integration.js",
-    "test": "node test/smoke.js && node test/regression.js && node test/integration.js && node test/sse-contract.js && node test/import-atlas.js && node test/atlas-acceptance.js",
+    "test": "node test/smoke.js && node test/regression.js && node test/integration.js && node test/sse-contract.js && node test/import-atlas.js && node test/atlas-acceptance.js && node test/sync-stack.js",
     "sse-contract": "node test/sse-contract.js",
     "test:import-atlas": "node test/import-atlas.js",
     "test:atlas-acceptance": "node test/atlas-acceptance.js",
@@ -30,6 +30,7 @@
     "install-commands": "node scripts/install-commands.js",
     "dashboard": "node dashboard/server.js",
     "redact-sweep": "node scripts/redact-sweep.js",
-    "import-atlas": "node scripts/import-atlas.js"
+    "import-atlas": "node scripts/import-atlas.js",
+    "sync-stack": "node scripts/sync-stack.js"
   }
 }
