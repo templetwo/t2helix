@@ -3,6 +3,42 @@
 All notable changes to t2helix are documented here. Format loosely follows
 [Keep a Changelog](https://keepachangelog.com/); versioning is [SemVer](https://semver.org/).
 
+## [0.11.0] — Compass Observatory dashboard + chronicle→stack sync
+
+Two additive features; the recall/compass engine, hooks, and MCP server are
+unchanged and backward compatible.
+
+### Added
+- **`scripts/sync-stack.js`** (`npm run sync-stack`) — pushes new local
+  `ground_truth`, `t2helix`-domain insights past a per-data-dir cursor
+  (`<dataDir>/.stack_sync_cursor`) to the shared Sovereign Stack, verbatim,
+  tagging the domain `,mirrored-from-local` plus a provenance header. Built to
+  close the drift where build-sessions log to the local chronicle only while
+  lineage-sessions write the stack. Idempotent (cursor advances only across a
+  contiguous run of successes); safe first run initialises the cursor and pushes
+  nothing unless `--backfill`; `--dry-run` / `--since` / `--limit` / `--data-dir`
+  flags; refuses a bare non-dry run against the `~/.t2helix-data` fallback. The
+  bridge token is read from `BRIDGE_TOKEN` / the bridge env file and is never
+  logged or written into a payload.
+- **`test/sync-stack.js`** (17 assertions, wired into `npm test`) — selection
+  filter, cursor honouring, dry-run-writes-nothing, and a full push against a
+  local stub stack asserting mirror-domain + provenance + verbatim content +
+  token-absent-from-payload + cursor-advance + idempotent re-run.
+
+### Changed
+- **Dashboard redesign — "Compass Observatory".** `dashboard/public/index.html`
+  reskinned as a HUD instrument panel: gradient-mesh + grain background, a
+  reactor that lights when the SSE link is live, Chakra Petch + IBM Plex Mono
+  typography, the OPEN/PAUSE/WITNESS verdicts as a green/amber/red phosphor triad
+  with glowing class-colored spines, glass cards, and a header telemetry readout.
+- **Live feed now renders newest-at-top and flows downward** (was
+  append-at-bottom): each new fire slides in with a class-colored glow,
+  reading-position is preserved when scrolled into history, and a floating
+  "N new fires" pill replaces the old bottom scroll-lock button.
+- **`dashboard/server.js`** — the dashboard-only CSP is widened to allow the
+  Google Fonts CDN and `data:` URIs (HUD fonts + inline grain). Engine and hooks
+  are untouched; all dynamic data still flows over `connect-src 'self'`.
+
 ## [0.10.1] — Release-truth doctor + error-atlas acceptance harness
 
 Hardening and self-verification produced by dogfooding v0.10.0 against this repo.

@@ -117,7 +117,7 @@ The hooks **fail safe**: if the binding can't load, rules-based gating (deny `rm
 
 ## Status
 
-**Current release: v0.10.1** — see [CHANGELOG.md](./CHANGELOG.md) for the full v0.5.0 → v0.10.1 history: Apache-2.0 relicense, fail-loud + `doctor`, git-bound policy-as-code, model-swap CI + manifest export/import, audit→promote commands, the local real-time dashboard, the error-resolution atlas loader (`lib/atlas.js`, `npm run import-atlas`), and the release-truth doctor + atlas acceptance harness (`npm run release:doctor`). The highlights below cover v0.4.0 and earlier; run `npm run release:doctor` to check these docs against the code.
+**Current release: v0.11.0** — see [CHANGELOG.md](./CHANGELOG.md) for the full v0.5.0 → v0.11.0 history: Apache-2.0 relicense, fail-loud + `doctor`, git-bound policy-as-code, model-swap CI + manifest export/import, audit→promote commands, the local real-time dashboard (v0.11 "Compass Observatory" HUD redesign with a newest-at-top feed), the error-resolution atlas loader (`lib/atlas.js`, `npm run import-atlas`), the release-truth doctor + atlas acceptance harness (`npm run release:doctor`), and the local→stack chronicle sync (`npm run sync-stack`). The highlights below cover v0.4.0 and earlier; run `npm run release:doctor` to check these docs against the code.
 
 **v0.4.0 — Auto-Distill (Stage 3).** The Stop hook now distills a method *candidate* from a successful session automatically — but because the Stop hook is a high-frequency writer, candidates are **quarantined** and surface nothing until explicitly promoted.
 
