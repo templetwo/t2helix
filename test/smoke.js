@@ -1218,6 +1218,58 @@ test('recordMethod: rejects empty shape / no steps; auto-distill ranks lower', (
 // v0.3 Stage 2 step 2: recall-surface selection (lib/surface) — the cardinal rule
 // ============================================================================
 const surface = require('../lib/surface');
+const { denoiseErrorQuery } = require('../lib/query-normalize');
+
+test('query-normalize: ordinary (non-error) prompts pass through verbatim', () => {
+  for (const p of ['please refactor the auth module', 'how do I rotate the bridge token', 'add a test for surface.js'])
+    assert.strictEqual(denoiseErrorQuery(p), p, 'no error signature → unchanged');
+});
+
+test('query-normalize: a V8 traceback collapses to its error identity', () => {
+  const prompt = [
+    'TypeError: Cannot read properties of undefined (reading "id")',
+    '    at Object.<anonymous> (/Users/me/proj/src/app.js:42:13)',
+    '    at Module._compile (node:internal/modules/cjs/loader:1234:14)'
+  ].join('\n');
+  const q = denoiseErrorQuery(prompt);
+  assert.ok(/TypeError/.test(q) && /reading/.test(q), 'error type + message survive');
+  assert.ok(!/Users|app\.js|loader|Object/.test(q), 'frame lines (paths, fn names) are dropped');
+  assert.ok(!/42|13|1234/.test(q), 'line:col and long digit runs are stripped');
+});
+
+test('query-normalize: a Python traceback keeps the exception, drops File frames', () => {
+  const prompt = [
+    'Traceback (most recent call last):',
+    '  File "/app/svc/db.py", line 88, in connect',
+    '    conn = sqlite3.connect(path)',
+    'sqlite3.OperationalError: database is locked'
+  ].join('\n');
+  const q = denoiseErrorQuery(prompt);
+  assert.ok(/OperationalError/.test(q) && /database is locked/.test(q), 'exception + message survive');
+  assert.ok(!/db\.py/.test(q), 'File frame path is dropped');
+  assert.ok(q.length > 0, 'never returns empty for a non-empty error paste');
+});
+
+test('query-normalize: hex addresses scrubbed; frame-flood input stays linear-time', () => {
+  assert.ok(!/0x[0-9a-f]/i.test(denoiseErrorQuery('RuntimeError: segfault at 0xdeadbeef00')), 'hex address stripped');
+  // A long run of repeated frame-shaped lines must not hang (no backtracking).
+  const big = 'TypeError: boom\n' + '    at f (/a/b.js:1:2)\n'.repeat(5000);
+  const q = denoiseErrorQuery(big);
+  assert.ok(/TypeError/.test(q) && q.length < 100, 'frames collapsed, identity kept');
+});
+
+test('surface.selectInjection: a pasted traceback is de-noised before it hits recall()', () => {
+  const prompt = [
+    'ReferenceError: foo is not defined',
+    '    at Object.<anonymous> (/Users/me/proj/lib/thing.js:42:13)',
+    '    at Module._compile (node:internal/modules/cjs/loader:1234:14)'
+  ].join('\n');
+  let genericQuery = null;
+  const recall = ({ query, tag }) => { if (!tag) genericQuery = query; return []; };
+  surface.selectInjection({ goal: null, prompt, recall });
+  assert.ok(genericQuery && /ReferenceError/.test(genericQuery), 'error type reaches recall');
+  assert.ok(!/Users|thing\.js|loader/.test(genericQuery), 'path/frame noise stripped from the recall query');
+});
 
 test('surface.isTrivialPrompt: acks + short-no-token trivial; task prompts not', () => {
   for (const p of ['yea', 'nice thats fine', 'ok', 'try hq again', 'merge it', 'keep going'])
