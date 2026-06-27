@@ -92,6 +92,17 @@ Then register `http://localhost:3742/sse` (or your tunnel URL) as an MCP connect
 
 The stdio path (Claude Code plugin) is unaffected. Both can run simultaneously from the same data dir.
 
+## Grok Heavy equal co-partnership
+
+T2 Helix is model-agnostic at the core. As of the Grok integration layer:
+
+- Grok seats can `require("./lib/grok-adapter")` or call the MCP tools directly.
+- Same chronicle, same compass rules, same recall/record surface.
+- `npm run grok:boot`, `npm run grok:witness`, `npm run grok:test` provide convenient entry points.
+- Historical cross-agent (Grok ↔ other) relay entries already live in the chronicle.
+
+See `README_GROK_INTEGRATION.md` and `T2_HELIX_GROK_INTEGRATION_SPEC.md`.
+
 ## Tests
 
 ```bash

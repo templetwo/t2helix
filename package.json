@@ -31,6 +31,11 @@
     "dashboard": "node dashboard/server.js",
     "redact-sweep": "node scripts/redact-sweep.js",
     "import-atlas": "node scripts/import-atlas.js",
-    "sync-stack": "node scripts/sync-stack.js"
+    "sync-stack": "node scripts/sync-stack.js",
+    "grok:init": "node -e 'console.log(require(\"./lib/grok-adapter\").grokInit())'",
+    "grok:boot": "node -e 'const g=require(\"./lib/grok-adapter\"); g.grokBoot({query: process.argv[2]||\"current context\"}).then(r=>console.dir(r,{depth:1})).catch(console.error)'",
+    "grok:witness": "node -e 'const g=require(\"./lib/grok-adapter\"); const q=process.argv.slice(2).join(\" \")||\"test action\"; console.dir(g.grokWitness(q), {depth:3})'",
+    "grok:test": "npm run grok:init && npm run grok:boot -- \"shared chronicle test\" && echo 'Grok + Claude now share the same foundational memory surface.'",
+    "full-sync": "npm run grok:init && echo 'Grok + Claude now share chronicle (same SQLite, same MCP surface)'"
   }
 }
