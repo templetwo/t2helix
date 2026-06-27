@@ -31,6 +31,11 @@
     "dashboard": "node dashboard/server.js",
     "redact-sweep": "node scripts/redact-sweep.js",
     "import-atlas": "node scripts/import-atlas.js",
-    "sync-stack": "node scripts/sync-stack.js"
+    "sync-stack": "node scripts/sync-stack.js",
+    "grok:init": "T2HELIX_DATA_DIR=\"$HOME/.claude/plugins/data/t2helix-templetwo-t2helix\" node -e 'console.log(require(\"./lib/grok-adapter\").grokInit())'",
+    "grok:boot": "T2HELIX_DATA_DIR=\"$HOME/.claude/plugins/data/t2helix-templetwo-t2helix\" node -e 'const g=require(\"./lib/grok-adapter\"); g.grokBoot({query: process.argv[2]||\"current context\"}).then(r=>console.dir(r,{depth:1})).catch(console.error)'",
+    "grok:witness": "T2HELIX_DATA_DIR=\"$HOME/.claude/plugins/data/t2helix-templetwo-t2helix\" node -e 'const g=require(\"./lib/grok-adapter\"); const q=process.argv.slice(2).join(\" \")||\"test action\"; console.dir(g.grokWitness(q), {depth:3})'",
+    "grok:test": "T2HELIX_DATA_DIR=\"$HOME/.claude/plugins/data/t2helix-templetwo-t2helix\" npm run grok:init && T2HELIX_DATA_DIR=\"$HOME/.claude/plugins/data/t2helix-templetwo-t2helix\" npm run grok:boot -- \"shared chronicle test\" && echo 'Grok + Claude now share the same foundational memory surface.'",
+    "full-sync": "T2HELIX_DATA_DIR=\"$HOME/.claude/plugins/data/t2helix-templetwo-t2helix\" npm run grok:init && echo 'Grok + Claude now share chronicle (same SQLite, same MCP surface)'"
   }
 }

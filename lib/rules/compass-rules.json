@@ -56,6 +56,13 @@
       "tool": "Bash",
       "pattern_source": "secrets",
       "reason": "Possible credential in command. It is redacted on the way into the chronicle (v0.2), but confirm it isn't being written elsewhere in cleartext."
+    },
+    {
+      "id": "grok-direct-mutate",
+      "classification": "WITNESS",
+      "tool": "Grok",
+      "pattern": "(?i)(?:raw-mutate|direct-write|force-apply|override-compass|bypass-chronicle)",
+      "reason": "Grok-specific high-risk direct mutation. Grok is equal peer but still passes through the same WITNESS floor as Claude."
     }
   ]
 }
