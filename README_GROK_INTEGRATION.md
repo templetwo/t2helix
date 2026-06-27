@@ -34,12 +34,20 @@ The chronicle does not care which model writes or recalls. Equal status by desig
 - No separate database. No forked rules.
 - Existing Claude Code hooks continue to work unchanged.
 
-## Compass coverage
+**Important for shared chronicle**: the `grok:*` npm scripts pin `T2HELIX_DATA_DIR` to the live plugin data directory (`~/.claude/plugins/data/t2helix-templetwo-t2helix`). Direct `node -r` or `require` calls will fall back to `~/.t2helix-data` unless the same env var is set.
 
-Grok actions that reach the Bash or edit surface are subject to the same WITNESS / PAUSE / OPEN rules as Claude. Additional Grok-specific guard patterns can be added to `lib/rules/compass-rules.json`.
+## Compass coverage (current scope)
+
+`grokWitness` now routes through `compass.classify` + `summarizeAction` (same functions used by the hooks).
+
+- WITNESS → hard deny (identical to Claude).
+- Plain-text creative notes default to OPEN (or rule match) and are recorded.
+- Full PAUSE single-use confirmation token flow is **not** implemented in the adapter yet (creative-layer scope). PAUSE results are currently non-blocking for direct Grok calls.
+
+If literal end-to-end parity including PAUSE override is required, that can be added (expose confirm_pending surface for Grok).
 
 ## Status
 
-Applied locally on 2026-06-27 from heavy-web-seat spec. This is the creative integration layer (no Rings formality required).
+Fixed data-dir resolution + compass routing 2026-06-27. PR #9.
 
 See also: `T2_HELIX_GROK_INTEGRATION_SPEC.md`
