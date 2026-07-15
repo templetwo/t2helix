@@ -38,16 +38,21 @@ The chronicle does not care which model writes or recalls. Equal status by desig
 
 ## Compass coverage (current scope)
 
-`grokWitness` now routes through `compass.classify` + `summarizeAction` (same functions used by the hooks).
+`grokWitness` routes through `compass.classify` + `summarizeAction` (same functions used by the hooks).
 
-- WITNESS → hard deny (identical to Claude).
-- Plain-text creative notes default to OPEN (or rule match) and are recorded.
-- Full PAUSE single-use confirmation token flow is **not** implemented in the adapter yet (creative-layer scope). PAUSE results are currently non-blocking for direct Grok calls.
+| Class | Non-hook seats (Cosmic / direct Grok) | Claude Code PreToolUse |
+|-------|----------------------------------------|-------------------------|
+| **WITNESS** | Hard deny (blocked, not recorded as success) | Hard deny |
+| **PAUSE** | Soft deny: mints `pending_confirmations` token; caller must `confirm_pending` then retry (adapter consumes approval) | Soft deny + token in hook reason |
+| **OPEN** | Record + proceed | Proceed |
 
-If literal end-to-end parity including PAUSE override is required, that can be added (expose confirm_pending surface for Grok).
+**History:** Through mid-2026-07, PAUSE was *logged* but treated as OPEN for Grok direct calls (`if (classification !== 'WITNESS') record`). That half-gate is closed so non-hook seats do not inherit a "safe mode that never reads the flag."
+
+Cosmic CLI surfaces approve as: `cosmic-cli helix confirm <token>`.
 
 ## Status
 
-Fixed data-dir resolution + compass routing 2026-06-27. PR #9.
+Fixed data-dir resolution + compass routing 2026-06-27. PR #9.  
+PAUSE token flow for non-hook seats 2026-07-14 (Cosmic runtime partnership).
 
 See also: `T2_HELIX_GROK_INTEGRATION_SPEC.md`
