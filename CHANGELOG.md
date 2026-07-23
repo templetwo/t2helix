@@ -3,6 +3,88 @@
 All notable changes to t2helix are documented here. Format loosely follows
 [Keep a Changelog](https://keepachangelog.com/); versioning is [SemVer](https://semver.org/).
 
+## [0.12.0] — Compass V2: Action IR, semantic Guard, safe-repeat leases
+
+Turns the compass from raw-string gating into an action-aware Guard layer while
+keeping the legacy classifier as the default authority in shadow mode. Implements
+the frozen v0.12 slice of the Master Architecture blueprint (Action IR, two
+migrated rule families, decision messages, shadow/replay, lease plumbing).
+Repair cards and hybrid vectors remain out of scope.
+
+### Added
+- **`lib/action-ir.js` + `lib/action-ir/{bash,tools}.js`** — conservative Action
+  Intermediate Representation (`parser_version: action-ir/0.12.0`). Tokenizes
+  shell operators, quotes, nested interpreters (`bash -c`, `eval`, `xargs`,
+  command substitution), and structured Edit/Write/MultiEdit inputs. Produces a
+  stable `normalized_action_hash` that includes parser version.
+- **`lib/compass-semantic.js`** — predicate evaluation over Action IR for the
+  migrated **rm** and **credential-paste** families, with evidence, predicate
+  IDs, and documentation-only false-positive clearance.
+- **`lib/compass-v2.js`** — orchestrator. Mode via `T2HELIX_COMPASS_V2`:
+  `shadow` (default, legacy authoritative + shadow compare), `enforce`
+  (family-migrated merge), or `off`.
+- **`lib/decision-message.js`** — versioned operator message contract
+  (`decision-message/0.12.0`): PAUSE / BLOCKED banner, action, why, next step.
+- **`lib/safe-repeat.js`** — session-scoped, TTL/use-bounded leases for one exact
+  normalized action after human confirmation. Never overrides WITNESS.
+- **Schema (additive)** — compass_log semantic columns; pending_confirmations
+  semantic identity; `safe_repeat_leases` table; `schema_migrations` ledger.
+- **MCP tools** — `dry_run_compass`, `explain_compass`, `arm_safe_repeat`,
+  `revoke_safe_repeat`, `list_safe_repeat`.
+- **`scripts/replay-compass.js`** (`npm run replay-compass`) — replay historical
+  compass_log under V2 and report diffs.
+- **Tests** — `test/action-ir.js`, `test/compass-v2.js`, July 21 + adversarial
+  fixtures.
+
+### Changed
+- **`hooks/pre-tool-use.js`** — Compass V2 classify/log; semantic pending
+  approvals; safe-repeat leases on PAUSE; versioned decision messages.
+- **Default remains safe:** shadow mode does not change host enforcement until
+  `T2HELIX_COMPASS_V2=enforce` is set.
+- **Action identity and operator display are separate strings.** `action_summary`
+  stays the legacy raw-command summary — it is hashed into the `action:<hash>`
+  chain anchor that PostToolUse independently recomputes, and it is the recall
+  query for memory coupling. The IR rendering is `display_summary`, used only in
+  deny messages. Review caught an earlier cut that used the IR summary for both,
+  which silently unpaired the compass↔outcome chain for most commands in the
+  default mode; `test/compass-v2.js` now pins the identity across all three modes.
+- **`summarizeIR` renders argv in written order and drops no operands.** It
+  previously hoisted flags ahead of subcommands and truncated to three operands,
+  so a deny message could show a command the operator never typed.
+- **`shadow.agree` measures classification agreement, not rule-id equality.**
+  Legacy and semantic often reach the same verdict under different rule names;
+  counting that as disagreement made the shadow window — the signal that gates
+  turning on enforce — permanently pessimistic. `shadow.same_rule` keeps the
+  finer detail.
+
+### Fixed
+- **WITNESS floor held for recursive wildcard deletes.** `rm -r <glob>` was
+  softening to PAUSE (token-overridable and lease-eligible) because the predicate
+  required both `-r` and `-f`. Recursion is what makes a wildcard delete
+  unbounded; `-f` only suppresses the prompt. Non-recursive wildcards remain the
+  intended PAUSE softening.
+- **GNU long-form flags now reach the predicates.** `--recursive` / `--force`
+  were never mapped to their short letters, so long-flag deletes bypassed every
+  rm predicate.
+- **`shadow_json` is scrubbed** like every other write into `compass_log`.
+- **Cleared floor rules stay auditable** — a false-positive clearance now records
+  the rule it cleared, the basis, and any redirection into `evidence_json`.
+  Previously it logged as a plain OPEN, indistinguishable from an action that
+  never tripped a rule.
+- **`replay-compass --strict` is no longer blind to the migrated families.** It
+  excluded exactly the rules this release changes; migrated softenings are now
+  reported separately instead of dropped, and the rule list is imported from
+  `ALL_MIGRATED_RULE_IDS` rather than duplicated (it had already drifted, 3 ids
+  vs 5).
+- **Safe-repeat leases work for memory-escalated PAUSEs.** `escalateByMemory`
+  returns a fresh object with no IR fields, and the lease lookup was the one call
+  site without the IR-hash fallback, so escalated decisions were silently
+  lease-ineligible.
+- **`getCompassHistory` selects the v0.12 audit columns**, so shadow observation
+  no longer requires raw SQL.
+- **`schema.sql` declares the v0.12 columns** it had been leaving to
+  `migrateSchema` alone.
+
 ## [0.11.0] — Compass Observatory dashboard + chronicle→stack sync
 
 Two additive features; the recall/compass engine, hooks, and MCP server are

@@ -214,6 +214,70 @@ const TOOLS = [
       },
       required: ['id']
     }
+  },
+  {
+    name: 'dry_run_compass',
+    description: 'Classify a hypothetical tool action through Compass V2 (Action IR + semantic predicates + legacy rules) without enforcing. Returns legacy, semantic, active decision, IR summary, and shadow comparison. Useful before running a risky command.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        tool_name: { type: 'string', description: 'Tool name (e.g. Bash, Edit, Write).', default: 'Bash' },
+        command: { type: 'string', description: 'For Bash: the command string.' },
+        tool_input: { type: 'object', description: 'Full tool_input object (alternative to command).' },
+        mode: { type: 'string', enum: ['shadow', 'enforce', 'off'], description: 'Override T2HELIX_COMPASS_V2 for this call only.' }
+      }
+    }
+  },
+  {
+    name: 'explain_compass',
+    description: 'Explain a proposed action\'s compass decision: parser version, predicates, evidence, message contract, and whether legacy/semantic agree.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        tool_name: { type: 'string', default: 'Bash' },
+        command: { type: 'string' },
+        tool_input: { type: 'object' }
+      }
+    }
+  },
+  {
+    name: 'arm_safe_repeat',
+    description: 'Arm a session-scoped safe-repeat lease for one exact normalized action after human confirmation. PAUSE ceiling only — never overrides WITNESS. TTL default 20 minutes, max 10 uses.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        normalized_action_hash: { type: 'string', description: 'From dry_run_compass / compass log (sha256:...).' },
+        executable: { type: 'string', description: 'Primary executable (e.g. rm, npm).' },
+        cwd: { type: 'string', description: 'Working directory the lease is bound to. Defaults to process cwd.' },
+        parser_version: { type: 'string', description: 'Must match Action IR parser version used to compute the hash.' },
+        max_uses: { type: 'number', default: 10 },
+        ttl_ms: { type: 'number', description: 'Lease TTL in ms (default 20 minutes).' },
+        issued_from_compass_log_id: { type: 'number', description: 'Optional compass_log id that was confirmed.' }
+      },
+      required: ['normalized_action_hash', 'executable']
+    }
+  },
+  {
+    name: 'revoke_safe_repeat',
+    description: 'Revoke one safe-repeat lease by lease_id, or all active leases for this session (all=true).',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        lease_id: { type: 'string' },
+        all: { type: 'boolean', description: 'When true, revoke every active lease for the current session.' }
+      }
+    }
+  },
+  {
+    name: 'list_safe_repeat',
+    description: 'List active (unexpired, unrevoked) safe-repeat leases for the current or given session.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        session_id: { type: 'string' },
+        limit: { type: 'number', default: 20 }
+      }
+    }
   }
 ];
 
@@ -367,6 +431,77 @@ function handleToolCall(name, args) {
     case 'dismiss_method_candidate': {
       const r = ch.dismissMethodCandidate({ id: num(args.id) });
       return textContent(r);
+    }
+    case 'dry_run_compass':
+    case 'explain_compass': {
+      const { classifyV2 } = require('../lib/compass-v2');
+      const { renderDecision, saferPathFor } = require('../lib/decision-message');
+      const tool_name = args.tool_name || 'Bash';
+      const tool_input = args.tool_input || (args.command != null ? { command: args.command } : {});
+      const prev = process.env.T2HELIX_COMPASS_V2;
+      if (args.mode) process.env.T2HELIX_COMPASS_V2 = args.mode;
+      let v2;
+      try {
+        v2 = classifyV2({ tool_name, tool_input }, { cwd: process.cwd() });
+      } finally {
+        if (args.mode) {
+          if (prev === undefined) delete process.env.T2HELIX_COMPASS_V2;
+          else process.env.T2HELIX_COMPASS_V2 = prev;
+        }
+      }
+      const message = v2.active.classification !== 'OPEN'
+        ? renderDecision(v2.active, {
+            action_summary: v2.action_summary.replace(/^[^:]+:\s*/, ''),
+            safer_path: saferPathFor(v2.active.rule_id)
+          })
+        : null;
+      return textContent({
+        mode: v2.mode,
+        action_summary: v2.action_summary,
+        active: v2.active,
+        legacy: v2.legacy,
+        semantic: v2.semantic,
+        ir: v2.ir
+          ? {
+              parser_version: v2.ir.parser_version,
+              normalized_action_hash: v2.ir.normalized_action_hash,
+              segments: v2.ir.segments,
+              mutation_targets: v2.ir.mutation_targets,
+              uncertainty: v2.ir.uncertainty,
+              cwd: v2.ir.cwd
+            }
+          : null,
+        shadow: v2.shadow,
+        message
+      });
+    }
+    case 'arm_safe_repeat': {
+      const r = ch.armSafeRepeat({
+        session_id: sid,
+        normalized_action_hash: args.normalized_action_hash,
+        executable: args.executable,
+        cwd: args.cwd || process.cwd(),
+        parser_version: args.parser_version,
+        max_uses: num(args.max_uses),
+        ttl_ms: num(args.ttl_ms),
+        issued_from_compass_log_id: num(args.issued_from_compass_log_id)
+      });
+      return textContent({ ok: true, ...r });
+    }
+    case 'revoke_safe_repeat': {
+      const r = ch.revokeSafeRepeat({
+        lease_id: args.lease_id,
+        session_id: sid,
+        all: !!args.all
+      });
+      return textContent(r);
+    }
+    case 'list_safe_repeat': {
+      const entries = ch.listSafeRepeatLeases({
+        session_id: args.session_id || sid,
+        limit: num(args.limit) ?? 20
+      });
+      return textContent({ count: entries.length, entries });
     }
     default:
       throw new Error(`unknown tool: ${name}`);

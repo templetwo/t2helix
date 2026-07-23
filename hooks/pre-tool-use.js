@@ -1,7 +1,9 @@
 #!/usr/bin/env node
 'use strict';
 
-const { classify, summarizeAction } = require('../lib/compass');
+const legacyCompass = require('../lib/compass');
+const { classifyV2 } = require('../lib/compass-v2');
+const { renderDecision, saferPathFor, MESSAGE_VERSION } = require('../lib/decision-message');
 const {
   logCompass,
   getGoal,
@@ -11,7 +13,9 @@ const {
   createPendingConfirmation,
   recall,
   recordCompassFire,
-  emitDegradedWarning
+  emitDegradedWarning,
+  findSafeRepeatLease,
+  consumeSafeRepeatLease
 } = require('../lib/chronicle');
 const { readStdin } = require('../lib/hook-io');
 const { escalateByMemory } = require('../lib/coupling');
@@ -36,25 +40,53 @@ async function main() {
     writeCurrentSession(session_id);
   }
 
-  let result;
+  let has_goal = false;
   try {
-    // Resolve has_goal best-effort. classify() itself reads only the rules file
-    // (no DB), so a broken/missing native binding must NOT disable rules-based
-    // gating — the headline safety feature (deny rm -rf / force-push / drop
-    // table) survives a DB outage; only the memory-coupling escalation degrades.
-    let has_goal = false;
-    try {
-      has_goal = session_id ? !!getGoal(session_id) : false;
-    } catch (e) {
-      if (e && e.code === 'T2HELIX_DRIVER_UNAVAILABLE') emitDegradedWarning();
-    }
-    result = classify({ tool_name, tool_input }, { has_goal });
+    has_goal = session_id ? !!getGoal(session_id) : false;
   } catch (e) {
-    process.stdout.write(JSON.stringify({ systemMessage: `t2helix compass error: ${e.message}` }));
-    process.exit(0);
+    if (e && e.code === 'T2HELIX_DRIVER_UNAVAILABLE') emitDegradedWarning();
   }
 
-  const action_summary = summarizeAction({ tool_name, tool_input });
+  let v2;
+  try {
+    v2 = classifyV2({ tool_name, tool_input }, { has_goal, cwd: process.cwd() });
+  } catch (e) {
+    // Last-resort: pure legacy path if V2 orchestrator throws
+    try {
+      const result = legacyCompass.classify({ tool_name, tool_input }, { has_goal });
+      const summary = legacyCompass.summarizeAction({ tool_name, tool_input });
+      v2 = {
+        active: result,
+        legacy: result,
+        semantic: null,
+        ir: null,
+        mode: 'off',
+        action_summary: summary,
+        display_summary: summary,
+        shadow: null,
+        message: null,
+        message_version: MESSAGE_VERSION
+      };
+    } catch (e2) {
+      process.stdout.write(JSON.stringify({ systemMessage: `t2helix compass error: ${e2.message}` }));
+      process.exit(0);
+    }
+  }
+
+  let result = v2.active;
+  // Identity vs display — see lib/compass-v2.js. action_summary is what
+  // PostToolUse also derives, so the action:<hash> chain only pairs if this stays
+  // the legacy raw-command summary.
+  const action_summary = v2.action_summary;
+  const display_summary = v2.display_summary || v2.action_summary;
+
+  // The semantic hash, resolved once. escalateByMemory() returns a fresh object
+  // that carries no IR fields, so every consumer needs the IR fallback — without
+  // it a memory-escalated PAUSE is silently ineligible for a safe-repeat lease.
+  const semanticHash = result.normalized_action_hash ||
+    (v2.ir && v2.ir.normalized_action_hash) || null;
+  const parserVersion = result.parser_version ||
+    (v2.ir && v2.ir.parser_version) || null;
 
   // Memory → compass coupling (helix criterion #2). When the rules return
   // OPEN, query recall() for similar past actions and let lib/coupling
@@ -77,6 +109,37 @@ async function main() {
     }
   }
 
+  // Safe-repeat lease: covers PAUSE only, never WITNESS.
+  if (result.classification === 'PAUSE' && session_id && semanticHash) {
+    try {
+      const lease = findSafeRepeatLease({
+        session_id,
+        normalized_action_hash: semanticHash,
+        parser_version: parserVersion,
+        cwd: (v2.ir && v2.ir.cwd) || process.cwd()
+      });
+      if (lease && consumeSafeRepeatLease(lease.lease_id)) {
+        try {
+          logCompass({
+            session_id,
+            tool_name,
+            action_summary,
+            classification: 'OPEN',
+            rule_matched: result.rule_id,
+            reason: `approved via safe-repeat lease ${lease.lease_id} (use ${lease.uses_count + 1}/${lease.max_uses})`,
+            user_override: `lease:${lease.lease_id}`,
+            normalized_action_hash: semanticHash,
+            parser_version: parserVersion,
+            message_version: MESSAGE_VERSION,
+            shadow_json: v2.shadow
+          });
+        } catch (_) {}
+        process.stdout.write(JSON.stringify({}));
+        process.exit(0);
+      }
+    } catch (_) {}
+  }
+
   try {
     logCompass({
       session_id,
@@ -84,19 +147,18 @@ async function main() {
       action_summary,
       classification: result.classification,
       rule_matched: result.rule_id,
-      reason: result.reason
+      reason: result.reason,
+      normalized_action_hash: semanticHash,
+      evidence_json: result.evidence || null,
+      parser_version: parserVersion,
+      message_version: MESSAGE_VERSION,
+      shadow_json: v2.shadow
     });
   } catch (e) {
     process.stderr.write(`[t2helix] logCompass dropped: ${e.message}\n`);
   }
 
-  // Compass → memory coupling (helix criterion #3). When the compass actually
-  // fires (PAUSE or WITNESS, never OPEN), write a chronicle entry tagged with
-  // action:<hash> so PostToolUse entries (also tagged with the same hash)
-  // close the chain. Recall by tag returns both endpoints: what the compass
-  // judged, and what actually happened next. Fire regardless of whether the
-  // approval-token override will consume it — the "compass fired here once"
-  // event is itself informative for future sessions.
+  // Compass → memory coupling (helix criterion #3).
   if (result.classification !== 'OPEN') {
     try {
       recordCompassFire({
@@ -107,8 +169,6 @@ async function main() {
         reason: result.reason
       });
     } catch (e) {
-      // Fail-open, but surface a dropped chain-anchor write so a half-chain
-      // (compass-fire with no paired PostToolUse outcome) isn't invisible.
       process.stderr.write(`[t2helix] recordCompassFire dropped: ${e.message}\n`);
     }
   }
@@ -118,16 +178,16 @@ async function main() {
     process.exit(0);
   }
 
-  // PAUSE override flow: if Claude (or user) already approved this exact action
-  // for this session_id, consume the approval and let the tool through.
+  // PAUSE override flow: single-use confirmation token (semantic hash preferred).
   if (result.classification === 'PAUSE' && session_id) {
     try {
-      const approval = findApproval({ session_id, action_summary });
-      // consumeApproval is an atomic compare-and-swap: it returns false if a
-      // racing process already claimed this single-use token, in which case we
-      // fall through to deny rather than double-spend the approval.
+      const approval = findApproval({
+        session_id,
+        action_summary,
+        normalized_action_hash: semanticHash,
+        parser_version: parserVersion
+      });
       if (approval && consumeApproval(approval.id)) {
-        // Re-log as OPEN with a marker so the compass history reflects what happened.
         try {
           logCompass({
             session_id,
@@ -136,9 +196,11 @@ async function main() {
             classification: 'OPEN',
             rule_matched: result.rule_id,
             reason: 'approved via single-use override token (consumed)',
-            // Queryable "this fire was overridden" audit signal. Store the consumed
-            // approval's row id, NOT the token value (schema.sql compass_log.user_override).
-            user_override: String(approval.id)
+            user_override: String(approval.id),
+            normalized_action_hash: semanticHash,
+            parser_version: parserVersion,
+            message_version: MESSAGE_VERSION,
+            shadow_json: v2.shadow
           });
         } catch (_) {}
         process.stdout.write(JSON.stringify({}));
@@ -147,27 +209,41 @@ async function main() {
     } catch (_) {}
   }
 
-  // No approval (or WITNESS): deny. For PAUSE, mint a pending confirmation token
-  // so Claude has a clear override path. For WITNESS, no override — hard deny.
-  let extraMsg = '';
+  // No approval (or WITNESS): deny.
+  let token = null;
   if (result.classification === 'PAUSE' && session_id) {
     try {
       const pending = createPendingConfirmation({
         session_id,
         action_summary,
         rule_matched: result.rule_id,
-        reason: result.reason
+        reason: result.reason,
+        normalized_action_hash: semanticHash,
+        parser_version: parserVersion
       });
-      extraMsg = ` To approve this specific action, call mcp__t2helix__confirm_pending with token="${pending.token}" then retry. Single-use, expires in 10 minutes.`;
+      token = pending.token;
     } catch (_) {}
   }
 
-  const softPrefix = result.classification === 'PAUSE' ? '[soft-deny] ' : '';
+  // Display summary here, not the identity summary — the operator should read
+  // the action the way the IR understood it. Mode disagreement stays out of the
+  // reason string; it is audited in compass_log.shadow_json.
+  const rendered = renderDecision(result, {
+    action_summary: display_summary.replace(/^[^:]+:\s*/, ''),
+    token,
+    safer_path: saferPathFor(result.rule_id),
+    offer_lease: false
+  });
+
+  // Prefer versioned message contract; fall back to classic one-liner if empty.
+  const reasonText = rendered.text ||
+    `[t2helix:${result.rule_id}] ${result.classification === 'PAUSE' ? '[soft-deny] ' : ''}${result.reason || ''}`;
+
   process.stdout.write(JSON.stringify({
     hookSpecificOutput: {
       hookEventName: 'PreToolUse',
       permissionDecision: 'deny',
-      permissionDecisionReason: `[t2helix:${result.rule_id}] ${softPrefix}${result.reason}${extraMsg}`
+      permissionDecisionReason: reasonText
     }
   }));
   process.exit(0);

@@ -185,6 +185,29 @@ function info(name, detail) { checks.push({ name, status: 'INFO', detail }); }
   }
 })();
 
+// 9. Compass V2 surface present (v0.12)
+(() => {
+  const files = [
+    'lib/action-ir.js',
+    'lib/compass-semantic.js',
+    'lib/compass-v2.js',
+    'lib/decision-message.js',
+    'lib/safe-repeat.js',
+    'scripts/replay-compass.js'
+  ];
+  const missing = files.filter(f => !exists(f));
+  if (missing.length) fail('compass v2 surface', `missing: ${missing.join(', ')}`);
+  else pass('compass v2 surface', 'Action IR + semantic + v2 orchestrator + messages + leases + replay present');
+})();
+
+// 10. schema declares safe_repeat_leases + migrations ledger
+(() => {
+  const schema = read('lib/schema.sql') || '';
+  if (!/safe_repeat_leases/.test(schema)) return fail('schema v0.12', 'safe_repeat_leases missing from schema.sql');
+  if (!/schema_migrations/.test(schema)) return fail('schema v0.12', 'schema_migrations missing from schema.sql');
+  pass('schema v0.12', 'safe_repeat_leases + schema_migrations declared');
+})();
+
 // ── report ───────────────────────────────────────────────────────────────────
 const ICON = { PASS: '  PASS  ', FAIL: '  FAIL  ', INFO: '  info  ' };
 console.log('T2Helix Release-Truth Doctor');

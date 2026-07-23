@@ -63,6 +63,10 @@ CREATE TABLE IF NOT EXISTS goals (
   last_referenced INTEGER NOT NULL
 );
 
+-- The trailing five columns are v0.12 (Compass V2). Fresh installs get them
+-- here; databases created before v0.12 get them from migrateSchema() in
+-- chronicle.js, which is a no-op when they already exist. Keep the two in step —
+-- this file is meant to describe the real shape of the table.
 CREATE TABLE IF NOT EXISTS compass_log (
   id INTEGER PRIMARY KEY,
   session_id TEXT,
@@ -72,7 +76,12 @@ CREATE TABLE IF NOT EXISTS compass_log (
   rule_matched TEXT,
   reason TEXT,
   user_override TEXT,
-  occurred_at INTEGER NOT NULL
+  occurred_at INTEGER NOT NULL,
+  normalized_action_hash TEXT,
+  evidence_json TEXT,
+  parser_version TEXT,
+  message_version TEXT,
+  shadow_json TEXT
 );
 
 CREATE INDEX IF NOT EXISTS idx_compass_session ON compass_log(session_id);
@@ -90,7 +99,10 @@ CREATE TABLE IF NOT EXISTS pending_confirmations (
   created_at INTEGER NOT NULL,
   approved_at INTEGER,
   used_at INTEGER,
-  expires_at INTEGER NOT NULL
+  expires_at INTEGER NOT NULL,
+  -- v0.12 semantic identity (see the compass_log note above).
+  normalized_action_hash TEXT,
+  parser_version TEXT
 );
 
 CREATE INDEX IF NOT EXISTS idx_pending_token ON pending_confirmations(token);
@@ -119,3 +131,33 @@ CREATE TABLE IF NOT EXISTS method_candidates (
 );
 
 CREATE INDEX IF NOT EXISTS idx_method_candidates_status ON method_candidates(status, created_at);
+
+-- Compass V2 (v0.12): schema ledger for additive migrations applied in chronicle.db().
+CREATE TABLE IF NOT EXISTS schema_migrations (
+  id TEXT PRIMARY KEY,
+  applied_at INTEGER NOT NULL
+);
+
+-- Safe-repeat leases (v0.12). Session-scoped, TTL/use-bounded permission to
+-- repeat one exact normalized action after human confirmation. Never overrides
+-- WITNESS. Fresh installs get the full table here; upgraded DBs get it via
+-- migrateSchema() in chronicle.js.
+CREATE TABLE IF NOT EXISTS safe_repeat_leases (
+  lease_id TEXT PRIMARY KEY,
+  session_id TEXT NOT NULL,
+  normalized_action_hash TEXT NOT NULL,
+  executable TEXT NOT NULL,
+  cwd TEXT NOT NULL DEFAULT '',
+  parser_version TEXT NOT NULL DEFAULT 'action-ir/0.12.0',
+  expires_at INTEGER NOT NULL,
+  max_uses INTEGER NOT NULL DEFAULT 10,
+  uses_count INTEGER NOT NULL DEFAULT 0,
+  classification_ceiling TEXT NOT NULL DEFAULT 'PAUSE',
+  issued_from_compass_log_id INTEGER,
+  revoked_at INTEGER,
+  created_at INTEGER NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_leases_lookup
+  ON safe_repeat_leases(session_id, normalized_action_hash, parser_version, cwd);
+CREATE INDEX IF NOT EXISTS idx_leases_session ON safe_repeat_leases(session_id, expires_at);

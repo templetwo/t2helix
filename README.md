@@ -22,9 +22,9 @@ That's it. Claude Code will handle hooks and MCP server registration automatical
 Two hooks integrated into Claude Code's agent loop:
 
 - **UserPromptSubmit** → recall: searches a local SQLite chronicle for past insights related to your prompt, plus the current session goal, and injects the result as additional context. Writes the current `session_id` to a state file so the MCP server can use the same signature.
-- **PreToolUse** → compass: matches the proposed tool action against a rule set. **WITNESS** classifications (rm -rf wildcards, `git push --force`, `drop table`, prod-context deploys, `--no-verify`) are hard-denied. **PAUSE** classifications (credential-shaped patterns) are soft-denied with an override token — see "PAUSE override flow" below. As of v0.2, any credential that reaches the chronicle is redacted to a fingerprint on the way in (`lib/secrets.js`), at the `record()` / `logCompass()` write chokepoints.
+- **PreToolUse** → compass: matches the proposed tool action against a rule set. **WITNESS** classifications (rm -rf wildcards, `git push --force`, `drop table`, prod-context deploys, `--no-verify`) are hard-denied. **PAUSE** classifications (credential-shaped patterns) are soft-denied with an override token — see "PAUSE override flow" below. As of v0.2, any credential that reaches the chronicle is redacted to a fingerprint on the way in (`lib/secrets.js`), at the `record()` / `logCompass()` write chokepoints. As of **v0.12 (Compass V2)**, PreToolUse also builds an Action IR, runs semantic predicates in **shadow** mode by default (`T2HELIX_COMPASS_V2=shadow|enforce|off`), and can honor safe-repeat leases for confirmed PAUSE actions.
 
-Plus an in-process MCP server exposing thirteen tools:
+Plus an in-process MCP server exposing eighteen tools:
 
 | Tool | Purpose |
 |------|---------|
@@ -41,6 +41,22 @@ Plus an in-process MCP server exposing thirteen tools:
 | `list_method_candidates` | (v0.4) Review the queue of auto-distilled method **candidates** the Stop hook produced from successful sessions. Quarantined — they never surface in recall until promoted. Filter by `status` (`pending`/`promoted`/`dismissed`). |
 | `promote_method` | (v0.4) Promote a candidate (by `id`) to a trusted, surfaceable `domain:'method'` insight (`source:promoted`). The only path from quarantine onto the recalled surface. |
 | `dismiss_method_candidate` | (v0.4) Reject a candidate (by `id`) so it leaves the review queue without becoming a method. |
+| `dry_run_compass` | (v0.12) Classify a hypothetical action through Compass V2 without enforcing. Returns legacy, semantic, active, IR, and shadow compare. |
+| `explain_compass` | (v0.12) Explain parser version, predicates, evidence, and the operator message for a proposed action. |
+| `arm_safe_repeat` | (v0.12) Arm a session-scoped lease for one exact normalized action (PAUSE ceiling only; never overrides WITNESS). |
+| `revoke_safe_repeat` | (v0.12) Revoke one lease or all active leases for the session. |
+| `list_safe_repeat` | (v0.12) List active safe-repeat leases. |
+
+## Compass V2 (v0.12)
+
+Action Intermediate Representation sits between hook input and policy:
+
+`tool input → adapter → Action IR → semantic predicates → decision + evidence`
+
+- **Default mode is `shadow`:** legacy string rules still enforce; semantic decisions are computed and logged (`shadow_json` on `compass_log`) for comparison.
+- **`T2HELIX_COMPASS_V2=enforce`:** migrated families (**rm**, **credential-paste**) use semantic predicates; non-migrated WITNESS rules (force-push, drop-table, deploy-prod, …) still come from the legacy classifier. Documentation-only commands (`echo "rm -rf /"`) clear string false positives.
+- **Safe-repeat leases** bind to `normalized_action_hash` + `parser_version` + `cwd`, are session-scoped and use-bounded, and never cover WITNESS.
+- Replay historical fires: `npm run replay-compass -- --limit 50`
 
 ## PAUSE override flow
 
@@ -88,7 +104,7 @@ npm run serve
 cloudflare tunnel --url http://localhost:3742
 ```
 
-Then register `http://localhost:3742/sse` (or your tunnel URL) as an MCP connector in your client. The tool surface is identical to the Claude Code plugin — same thirteen tools, same chronicle, same data dir.
+Then register `http://localhost:3742/sse` (or your tunnel URL) as an MCP connector in your client. The tool surface is identical to the Claude Code plugin — same eighteen tools, same chronicle, same data dir.
 
 The stdio path (Claude Code plugin) is unaffected. Both can run simultaneously from the same data dir.
 

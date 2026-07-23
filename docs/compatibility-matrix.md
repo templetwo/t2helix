@@ -16,7 +16,7 @@ All versions require `npm run rebuild` after a Node major-version upgrade
 
 | Transport | Status | Notes |
 |-----------|--------|-------|
-| stdio | CI-tested | Default plugin path; regression suite covers all 13 tools |
+| stdio | CI-tested | Default plugin path; regression suite covers all 18 tools |
 | SSE (HTTP) | CI-tested (v0.7.0) | `--transport sse --port <N>`; use port 0 for ephemeral; SSE contract suite |
 
 The SSE transport is a thin wrapper around the same `handleToolCall()` function
