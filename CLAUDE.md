@@ -179,7 +179,7 @@ fails-open inside the 5s hook budget instead of being killed mid-write) and
 ## MCP server
 
 `mcp/server.js` is hand-rolled JSON-RPC (no SDK transport abstraction beyond the schema
-types) exposing thirteen tools — `recall`, `record`, `record_method`, `set_goal`,
+types) exposing eighteen tools — `recall`, `record`, `record_method`, `set_goal`,
 `open_thread`, `resolve_thread`, `get_state`, `recall_compass`, `confirm_pending`,
 `list_pending`, and (v0.4) `list_method_candidates`, `promote_method`,
 `dismiss_method_candidate`. Each maps to a `lib/chronicle.js` function. Default transport is `stdio` (the plugin path);

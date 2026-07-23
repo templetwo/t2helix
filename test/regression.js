@@ -96,11 +96,16 @@ function test(name, fn) { tests.push({ name, fn }); }
 
 // ── Protocol ──────────────────────────────────────────────────────────────────
 
-test('protocol: tools/list returns 13 tools, each with description + inputSchema', async (client) => {
+test('protocol: tools/list returns 18 tools, each with description + inputSchema', async (client) => {
   const r = await client.request('tools/list', {});
   const tools = r.result.tools;
-  assert.strictEqual(tools.length, 13, `expected 13 tools, got ${tools.length}`);
-  const expected = ['recall', 'record', 'record_method', 'set_goal', 'open_thread', 'resolve_thread', 'get_state', 'recall_compass', 'confirm_pending', 'list_pending', 'list_method_candidates', 'promote_method', 'dismiss_method_candidate'];
+  assert.strictEqual(tools.length, 18, `expected 18 tools, got ${tools.length}`);
+  const expected = [
+    'recall', 'record', 'record_method', 'set_goal', 'open_thread', 'resolve_thread',
+    'get_state', 'recall_compass', 'confirm_pending', 'list_pending',
+    'list_method_candidates', 'promote_method', 'dismiss_method_candidate',
+    'dry_run_compass', 'explain_compass', 'arm_safe_repeat', 'revoke_safe_repeat', 'list_safe_repeat'
+  ];
   const names = new Set(tools.map(t => t.name));
   for (const n of expected) {
     assert.ok(names.has(n), `tools/list missing ${n}`);

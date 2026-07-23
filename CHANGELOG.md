@@ -3,6 +3,45 @@
 All notable changes to t2helix are documented here. Format loosely follows
 [Keep a Changelog](https://keepachangelog.com/); versioning is [SemVer](https://semver.org/).
 
+## [0.12.0] — Compass V2: Action IR, semantic Guard, safe-repeat leases
+
+Turns the compass from raw-string gating into an action-aware Guard layer while
+keeping the legacy classifier as the default authority in shadow mode. Implements
+the frozen v0.12 slice of the Master Architecture blueprint (Action IR, two
+migrated rule families, decision messages, shadow/replay, lease plumbing).
+Repair cards and hybrid vectors remain out of scope.
+
+### Added
+- **`lib/action-ir.js` + `lib/action-ir/{bash,tools}.js`** — conservative Action
+  Intermediate Representation (`parser_version: action-ir/0.12.0`). Tokenizes
+  shell operators, quotes, nested interpreters (`bash -c`, `eval`, `xargs`,
+  command substitution), and structured Edit/Write/MultiEdit inputs. Produces a
+  stable `normalized_action_hash` that includes parser version.
+- **`lib/compass-semantic.js`** — predicate evaluation over Action IR for the
+  migrated **rm** and **credential-paste** families, with evidence, predicate
+  IDs, and documentation-only false-positive clearance.
+- **`lib/compass-v2.js`** — orchestrator. Mode via `T2HELIX_COMPASS_V2`:
+  `shadow` (default, legacy authoritative + shadow compare), `enforce`
+  (family-migrated merge), or `off`.
+- **`lib/decision-message.js`** — versioned operator message contract
+  (`decision-message/0.12.0`): PAUSE / BLOCKED banner, action, why, next step.
+- **`lib/safe-repeat.js`** — session-scoped, TTL/use-bounded leases for one exact
+  normalized action after human confirmation. Never overrides WITNESS.
+- **Schema (additive)** — compass_log semantic columns; pending_confirmations
+  semantic identity; `safe_repeat_leases` table; `schema_migrations` ledger.
+- **MCP tools** — `dry_run_compass`, `explain_compass`, `arm_safe_repeat`,
+  `revoke_safe_repeat`, `list_safe_repeat`.
+- **`scripts/replay-compass.js`** (`npm run replay-compass`) — replay historical
+  compass_log under V2 and report diffs.
+- **Tests** — `test/action-ir.js`, `test/compass-v2.js`, July 21 + adversarial
+  fixtures.
+
+### Changed
+- **`hooks/pre-tool-use.js`** — Compass V2 classify/log; semantic pending
+  approvals; safe-repeat leases on PAUSE; versioned decision messages.
+- **Default remains safe:** shadow mode does not change host enforcement until
+  `T2HELIX_COMPASS_V2=enforce` is set.
+
 ## [0.11.0] — Compass Observatory dashboard + chronicle→stack sync
 
 Two additive features; the recall/compass engine, hooks, and MCP server are

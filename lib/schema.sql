@@ -119,3 +119,33 @@ CREATE TABLE IF NOT EXISTS method_candidates (
 );
 
 CREATE INDEX IF NOT EXISTS idx_method_candidates_status ON method_candidates(status, created_at);
+
+-- Compass V2 (v0.12): schema ledger for additive migrations applied in chronicle.db().
+CREATE TABLE IF NOT EXISTS schema_migrations (
+  id TEXT PRIMARY KEY,
+  applied_at INTEGER NOT NULL
+);
+
+-- Safe-repeat leases (v0.12). Session-scoped, TTL/use-bounded permission to
+-- repeat one exact normalized action after human confirmation. Never overrides
+-- WITNESS. Fresh installs get the full table here; upgraded DBs get it via
+-- migrateSchema() in chronicle.js.
+CREATE TABLE IF NOT EXISTS safe_repeat_leases (
+  lease_id TEXT PRIMARY KEY,
+  session_id TEXT NOT NULL,
+  normalized_action_hash TEXT NOT NULL,
+  executable TEXT NOT NULL,
+  cwd TEXT NOT NULL DEFAULT '',
+  parser_version TEXT NOT NULL DEFAULT 'action-ir/0.12.0',
+  expires_at INTEGER NOT NULL,
+  max_uses INTEGER NOT NULL DEFAULT 10,
+  uses_count INTEGER NOT NULL DEFAULT 0,
+  classification_ceiling TEXT NOT NULL DEFAULT 'PAUSE',
+  issued_from_compass_log_id INTEGER,
+  revoked_at INTEGER,
+  created_at INTEGER NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_leases_lookup
+  ON safe_repeat_leases(session_id, normalized_action_hash, parser_version, cwd);
+CREATE INDEX IF NOT EXISTS idx_leases_session ON safe_repeat_leases(session_id, expires_at);
