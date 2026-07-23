@@ -27,6 +27,7 @@ if (DATA_DIR) process.env.T2HELIX_DATA_DIR = DATA_DIR;
 
 const ch = require('../lib/chronicle');
 const { classifyV2 } = require('../lib/compass-v2');
+const { ALL_MIGRATED_RULE_IDS } = require('../lib/compass-semantic');
 
 function parseToolFromSummary(summary) {
   // summarizeAction format: "Tool: rest"
@@ -66,7 +67,8 @@ function main() {
     agree_legacy: 0,
     agree_semantic: 0,
     diffs: [],
-    weakenings: []
+    weakenings: [],
+    migrated_softenings: []
   };
 
   // Replay oldest-first for readability
@@ -114,14 +116,17 @@ function main() {
       report.diffs.push(diff);
     }
 
-    // Weakening: original WITNESS, active OPEN/PAUSE under enforce would be bad for floor rules
-    if (
-      severity(row.classification) > severity(v2.active.classification) &&
-      row.rule_matched &&
-      !['rm-rf-wildcard', 'rm-rf-root', 'credential-paste'].includes(row.rule_matched)
-    ) {
-      // non-migrated floor weakened
-      report.weakenings.push(diff);
+    // A weakening is any row whose replayed verdict is softer than what was
+    // originally recorded. Migrated families are SUPPOSED to soften in places
+    // (that is the false-positive fix), so they are reported separately rather
+    // than excluded — excluding them made --strict blind to regressions in the
+    // exact rules this release changes.
+    if (severity(row.classification) > severity(v2.active.classification) && row.rule_matched) {
+      if (ALL_MIGRATED_RULE_IDS.has(row.rule_matched)) {
+        report.migrated_softenings.push(diff);
+      } else {
+        report.weakenings.push(diff);
+      }
     }
   }
 
@@ -132,7 +137,14 @@ function main() {
     console.log(`  agree_legacy:   ${report.agree_legacy}`);
     console.log(`  agree_semantic: ${report.agree_semantic}`);
     console.log(`  diffs:          ${report.diffs.length}`);
-    console.log(`  weakenings:     ${report.weakenings.length}`);
+    console.log(`  weakenings:     ${report.weakenings.length}  (non-migrated floor rules — fails --strict)`);
+    console.log(`  softenings:     ${report.migrated_softenings.length}  (migrated families — expected, review them)`);
+    for (const d of report.migrated_softenings.slice(0, 10)) {
+      console.log(
+        `    softened #${d.id} ${d.original.classification}/${d.original.rule}` +
+        ` → ${d.active.classification}/${d.active.rule} :: ${(d.summary || '').slice(0, 70)}`
+      );
+    }
     if (report.diffs.length && report.diffs.length <= 20) {
       for (const d of report.diffs.slice(0, 20)) {
         if (d.error) {

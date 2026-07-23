@@ -62,6 +62,16 @@ They couple through two named criteria:
   entry with the *same* `action:<hash>`. Recall by that tag returns both ends of the chain
   — what the compass judged and what then happened.
 
+**The action-identity invariant.** Both hooks derive that hash independently —
+PreToolUse from `classifyV2().action_summary`, PostToolUse from
+`compass.summarizeAction()` — so those two strings must stay byte-identical. They are
+also the pending-confirmation key and the recall query for the memory coupling. Nothing
+that normalizes, reorders, or prettifies a command may be routed into `action_summary`;
+Compass V2 keeps its IR rendering in a separate `display_summary` used only for operator
+messages (see `docs/compass-v2.md`). Divergence here fails *silently* — no error, the
+chain just stops pairing — which is why `test/compass-v2.js` asserts hash equality across
+all three V2 modes.
+
 ### Recall surfacing & boundary-active goal (v0.3, the "method-surfacing" stage)
 
 `lib/surface.js` is pure, unit-tested selection logic the UserPromptSubmit hook delegates
@@ -181,8 +191,10 @@ fails-open inside the 5s hook budget instead of being killed mid-write) and
 `mcp/server.js` is hand-rolled JSON-RPC (no SDK transport abstraction beyond the schema
 types) exposing eighteen tools — `recall`, `record`, `record_method`, `set_goal`,
 `open_thread`, `resolve_thread`, `get_state`, `recall_compass`, `confirm_pending`,
-`list_pending`, and (v0.4) `list_method_candidates`, `promote_method`,
-`dismiss_method_candidate`. Each maps to a `lib/chronicle.js` function. Default transport is `stdio` (the plugin path);
+`list_pending`, (v0.4) `list_method_candidates`, `promote_method`,
+`dismiss_method_candidate`, and (v0.12) `dry_run_compass`, `explain_compass`,
+`arm_safe_repeat`, `revoke_safe_repeat`, `list_safe_repeat`. Each maps to a
+`lib/chronicle.js` function. Default transport is `stdio` (the plugin path);
 `--transport sse --port 3742` serves any other MCP client from the same data dir. Both can
 run simultaneously. When adding a tool, update `TOOLS` (schema), the dispatch switch, and
 the regression contract test.

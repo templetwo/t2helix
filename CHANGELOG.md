@@ -41,6 +41,49 @@ Repair cards and hybrid vectors remain out of scope.
   approvals; safe-repeat leases on PAUSE; versioned decision messages.
 - **Default remains safe:** shadow mode does not change host enforcement until
   `T2HELIX_COMPASS_V2=enforce` is set.
+- **Action identity and operator display are separate strings.** `action_summary`
+  stays the legacy raw-command summary — it is hashed into the `action:<hash>`
+  chain anchor that PostToolUse independently recomputes, and it is the recall
+  query for memory coupling. The IR rendering is `display_summary`, used only in
+  deny messages. Review caught an earlier cut that used the IR summary for both,
+  which silently unpaired the compass↔outcome chain for most commands in the
+  default mode; `test/compass-v2.js` now pins the identity across all three modes.
+- **`summarizeIR` renders argv in written order and drops no operands.** It
+  previously hoisted flags ahead of subcommands and truncated to three operands,
+  so a deny message could show a command the operator never typed.
+- **`shadow.agree` measures classification agreement, not rule-id equality.**
+  Legacy and semantic often reach the same verdict under different rule names;
+  counting that as disagreement made the shadow window — the signal that gates
+  turning on enforce — permanently pessimistic. `shadow.same_rule` keeps the
+  finer detail.
+
+### Fixed
+- **WITNESS floor held for recursive wildcard deletes.** `rm -r <glob>` was
+  softening to PAUSE (token-overridable and lease-eligible) because the predicate
+  required both `-r` and `-f`. Recursion is what makes a wildcard delete
+  unbounded; `-f` only suppresses the prompt. Non-recursive wildcards remain the
+  intended PAUSE softening.
+- **GNU long-form flags now reach the predicates.** `--recursive` / `--force`
+  were never mapped to their short letters, so long-flag deletes bypassed every
+  rm predicate.
+- **`shadow_json` is scrubbed** like every other write into `compass_log`.
+- **Cleared floor rules stay auditable** — a false-positive clearance now records
+  the rule it cleared, the basis, and any redirection into `evidence_json`.
+  Previously it logged as a plain OPEN, indistinguishable from an action that
+  never tripped a rule.
+- **`replay-compass --strict` is no longer blind to the migrated families.** It
+  excluded exactly the rules this release changes; migrated softenings are now
+  reported separately instead of dropped, and the rule list is imported from
+  `ALL_MIGRATED_RULE_IDS` rather than duplicated (it had already drifted, 3 ids
+  vs 5).
+- **Safe-repeat leases work for memory-escalated PAUSEs.** `escalateByMemory`
+  returns a fresh object with no IR fields, and the lease lookup was the one call
+  site without the IR-hash fallback, so escalated decisions were silently
+  lease-ineligible.
+- **`getCompassHistory` selects the v0.12 audit columns**, so shadow observation
+  no longer requires raw SQL.
+- **`schema.sql` declares the v0.12 columns** it had been leaving to
+  `migrateSchema` alone.
 
 ## [0.11.0] — Compass Observatory dashboard + chronicle→stack sync
 

@@ -10,6 +10,18 @@ tool input → adapter → Action IR → semantic predicates → decision + evid
                 ↘ legacy string rules (still authoritative in shadow mode)
 ```
 
+## Two summaries — do not merge them
+
+| Field | Role |
+|-------|------|
+| `action_summary` | **Identity.** The legacy raw-command summary. Hashed into the `action:<hash>` chain anchor, hashed into the pending-confirmation key, and used as the recall query for memory coupling. |
+| `display_summary` | **Operator display only.** The IR rendering, used in deny messages. |
+
+`hooks/post-tool-use.js` independently derives `action_summary` via
+`compass.summarizeAction()`. If the two ever diverge the compass↔outcome chain
+stops pairing with no error — recall simply returns one end. Never hash
+`display_summary`, and never let the IR rendering become the identity.
+
 ## Mode (`T2HELIX_COMPASS_V2`)
 
 | Value | Behavior |
@@ -31,6 +43,33 @@ tool input → adapter → Action IR → semantic predicates → decision + evid
 | `lib/safe-repeat.js` | Session leases (PAUSE only) |
 | `scripts/replay-compass.js` | Historical replay / diff report |
 
+## What enforce actually changes
+
+| Action | legacy | enforce | why |
+|--------|--------|---------|-----|
+| `rm -rf <glob>` / `rm -r <glob>` | WITNESS | WITNESS | recursion makes the match set unbounded; `-f` only suppresses the prompt |
+| `rm -f <glob>` (non-recursive) | WITNESS | **PAUSE** | the July 21 false-positive class — still gated, now overridable |
+| `rm -rf /tmp/<session-dir>` | WITNESS | **OPEN** | session-created temp cleanup, no wildcard |
+| `rm -f /abs/path/one.log` | WITNESS | **OPEN** | single named file, non-recursive |
+| `echo`/`printf` of a dangerous string | WITNESS | **OPEN** | quoted prose executes nothing (see below) |
+
+Everything else — force-push, reset --hard, drop-table, prod mutations,
+`--no-verify` — stays on the legacy classifier untouched.
+
+### The documentation-only clearance
+
+An `echo`/`printf` whose text merely *contains* a gated command clears the false
+positive, and this is the one place a semantic verdict overrides a rule it was
+not migrated to reason about. It is deliberate: an echo executes nothing, and
+when it redirects into a file it is a write — which the Write/Edit tools perform
+ungated anyway, so gating it here would buy no safety while re-breaking the
+documentation false positives. The clearance is not silent: the cleared rule id,
+the basis, and any redirection are recorded in `compass_log.evidence_json`.
+
+Any segment that could actually execute the text — a pipe into a shell, a nested
+interpreter, command substitution, backticks — fails the documentation test and
+stays gated.
+
 ## Enabling enforce
 
 ```bash
@@ -38,7 +77,10 @@ export T2HELIX_COMPASS_V2=enforce
 ```
 
 Prefer a clean shadow observation window and `npm run replay-compass` before
-making enforce the default for a seat.
+making enforce the default for a seat. Read both counters the replay prints:
+`weakenings` (non-migrated floor rules softened — fails `--strict`, should always
+be zero) and `softenings` (migrated families softened — expected, but review the
+listed rows against the table above).
 
 ## Safe-repeat leases
 

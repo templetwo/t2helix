@@ -2,7 +2,7 @@
 'use strict';
 
 const legacyCompass = require('../lib/compass');
-const { classifyV2, compassV2Mode } = require('../lib/compass-v2');
+const { classifyV2 } = require('../lib/compass-v2');
 const { renderDecision, saferPathFor, MESSAGE_VERSION } = require('../lib/decision-message');
 const {
   logCompass,
@@ -54,13 +54,15 @@ async function main() {
     // Last-resort: pure legacy path if V2 orchestrator throws
     try {
       const result = legacyCompass.classify({ tool_name, tool_input }, { has_goal });
+      const summary = legacyCompass.summarizeAction({ tool_name, tool_input });
       v2 = {
         active: result,
         legacy: result,
         semantic: null,
         ir: null,
         mode: 'off',
-        action_summary: legacyCompass.summarizeAction({ tool_name, tool_input }),
+        action_summary: summary,
+        display_summary: summary,
         shadow: null,
         message: null,
         message_version: MESSAGE_VERSION
@@ -72,8 +74,19 @@ async function main() {
   }
 
   let result = v2.active;
+  // Identity vs display — see lib/compass-v2.js. action_summary is what
+  // PostToolUse also derives, so the action:<hash> chain only pairs if this stays
+  // the legacy raw-command summary.
   const action_summary = v2.action_summary;
-  const mode = v2.mode || compassV2Mode();
+  const display_summary = v2.display_summary || v2.action_summary;
+
+  // The semantic hash, resolved once. escalateByMemory() returns a fresh object
+  // that carries no IR fields, so every consumer needs the IR fallback — without
+  // it a memory-escalated PAUSE is silently ineligible for a safe-repeat lease.
+  const semanticHash = result.normalized_action_hash ||
+    (v2.ir && v2.ir.normalized_action_hash) || null;
+  const parserVersion = result.parser_version ||
+    (v2.ir && v2.ir.parser_version) || null;
 
   // Memory → compass coupling (helix criterion #2). When the rules return
   // OPEN, query recall() for similar past actions and let lib/coupling
@@ -97,12 +110,12 @@ async function main() {
   }
 
   // Safe-repeat lease: covers PAUSE only, never WITNESS.
-  if (result.classification === 'PAUSE' && session_id && result.normalized_action_hash) {
+  if (result.classification === 'PAUSE' && session_id && semanticHash) {
     try {
       const lease = findSafeRepeatLease({
         session_id,
-        normalized_action_hash: result.normalized_action_hash,
-        parser_version: result.parser_version,
+        normalized_action_hash: semanticHash,
+        parser_version: parserVersion,
         cwd: (v2.ir && v2.ir.cwd) || process.cwd()
       });
       if (lease && consumeSafeRepeatLease(lease.lease_id)) {
@@ -115,8 +128,8 @@ async function main() {
             rule_matched: result.rule_id,
             reason: `approved via safe-repeat lease ${lease.lease_id} (use ${lease.uses_count + 1}/${lease.max_uses})`,
             user_override: `lease:${lease.lease_id}`,
-            normalized_action_hash: result.normalized_action_hash,
-            parser_version: result.parser_version,
+            normalized_action_hash: semanticHash,
+            parser_version: parserVersion,
             message_version: MESSAGE_VERSION,
             shadow_json: v2.shadow
           });
@@ -135,9 +148,9 @@ async function main() {
       classification: result.classification,
       rule_matched: result.rule_id,
       reason: result.reason,
-      normalized_action_hash: result.normalized_action_hash || (v2.ir && v2.ir.normalized_action_hash) || null,
+      normalized_action_hash: semanticHash,
       evidence_json: result.evidence || null,
-      parser_version: result.parser_version || (v2.ir && v2.ir.parser_version) || null,
+      parser_version: parserVersion,
       message_version: MESSAGE_VERSION,
       shadow_json: v2.shadow
     });
@@ -171,8 +184,8 @@ async function main() {
       const approval = findApproval({
         session_id,
         action_summary,
-        normalized_action_hash: result.normalized_action_hash || (v2.ir && v2.ir.normalized_action_hash) || null,
-        parser_version: result.parser_version || (v2.ir && v2.ir.parser_version) || null
+        normalized_action_hash: semanticHash,
+        parser_version: parserVersion
       });
       if (approval && consumeApproval(approval.id)) {
         try {
@@ -184,8 +197,8 @@ async function main() {
             rule_matched: result.rule_id,
             reason: 'approved via single-use override token (consumed)',
             user_override: String(approval.id),
-            normalized_action_hash: result.normalized_action_hash || null,
-            parser_version: result.parser_version || null,
+            normalized_action_hash: semanticHash,
+            parser_version: parserVersion,
             message_version: MESSAGE_VERSION,
             shadow_json: v2.shadow
           });
@@ -205,15 +218,18 @@ async function main() {
         action_summary,
         rule_matched: result.rule_id,
         reason: result.reason,
-        normalized_action_hash: result.normalized_action_hash || (v2.ir && v2.ir.normalized_action_hash) || null,
-        parser_version: result.parser_version || (v2.ir && v2.ir.parser_version) || null
+        normalized_action_hash: semanticHash,
+        parser_version: parserVersion
       });
       token = pending.token;
     } catch (_) {}
   }
 
+  // Display summary here, not the identity summary — the operator should read
+  // the action the way the IR understood it. Mode disagreement stays out of the
+  // reason string; it is audited in compass_log.shadow_json.
   const rendered = renderDecision(result, {
-    action_summary: action_summary.replace(/^[^:]+:\s*/, ''),
+    action_summary: display_summary.replace(/^[^:]+:\s*/, ''),
     token,
     safer_path: saferPathFor(result.rule_id),
     offer_lease: false
@@ -223,18 +239,11 @@ async function main() {
   const reasonText = rendered.text ||
     `[t2helix:${result.rule_id}] ${result.classification === 'PAUSE' ? '[soft-deny] ' : ''}${result.reason || ''}`;
 
-  // Annotate mode for operators when enforcing (so shadow vs enforce is visible)
-  const modeNote = mode === 'enforce' && result.semantic
-    ? ''
-    : (mode === 'shadow' && v2.shadow && !v2.shadow.agree
-      ? '' // keep reason clean; disagreement is in shadow_json audit
-      : '');
-
   process.stdout.write(JSON.stringify({
     hookSpecificOutput: {
       hookEventName: 'PreToolUse',
       permissionDecision: 'deny',
-      permissionDecisionReason: reasonText + modeNote
+      permissionDecisionReason: reasonText
     }
   }));
   process.exit(0);
