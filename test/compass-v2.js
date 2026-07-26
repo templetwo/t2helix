@@ -105,7 +105,11 @@ test('message contract renders WITNESS as BLOCKED', () => {
 
 // ── Merge rules ──────────────────────────────────────────────────────────────
 
-test('merge enforce: migrated false-positive clears to OPEN', () => {
+// A clear requires AFFIRMATIVE evidence that the parser located the family it is
+// clearing (guard added 2026-07-26). The IR is therefore part of the contract, not
+// an optional extra: production always has one, and a bare OPEN with no IR is
+// "I have nothing to say", which may not retire a legacy WITNESS.
+test('merge enforce: migrated false-positive clears to OPEN when the parser SAW the rm', () => {
   const leg = { classification: 'WITNESS', rule_id: 'rm-rf-wildcard', reason: 'legacy' };
   const sem = {
     classification: 'OPEN',
@@ -113,9 +117,54 @@ test('merge enforce: migrated false-positive clears to OPEN', () => {
     normalized_action_hash: 'sha256:abc',
     parser_version: 'action-ir/0.12.0'
   };
-  const m = mergeDecisions(leg, sem, 'enforce');
+  const ir = { segments: [{ executable: 'rm', argv: ['-rf', '/tmp/x'], uncertainty: [] }] };
+  const m = mergeDecisions(leg, sem, 'enforce', ir);
   assert.strictEqual(m.active.classification, 'OPEN');
   assert.strictEqual(m.active.false_positive_cleared, 'rm-rf-wildcard');
+});
+
+test('merge enforce: migrated WITNESS STANDS when the parser never saw the rm', () => {
+  // `sudo rm -rf /` shape: the wrapper is the executable, no rm predicate fires,
+  // so semantic OPEN means "did not see it" — it must not retire the legacy floor.
+  const leg = { classification: 'WITNESS', rule_id: 'rm-rf-wildcard', reason: 'legacy' };
+  const sem = {
+    classification: 'OPEN',
+    rule_id: null,
+    normalized_action_hash: 'sha256:abc',
+    parser_version: 'action-ir/0.12.0'
+  };
+  const ir = { segments: [{ executable: 'sudo', argv: ['rm', '-rf', '/'], uncertainty: [] }] };
+  const m = mergeDecisions(leg, sem, 'enforce', ir);
+  assert.strictEqual(m.active.classification, 'WITNESS');
+  assert.strictEqual(m.active.rule_id, 'rm-rf-wildcard');
+  assert.strictEqual(m.active.evidence.basis, 'semantic-did-not-see-family');
+});
+
+test('merge enforce: migrated WITNESS STANDS on unresolved command substitution', () => {
+  // `echo $(rm -rf ...)`: executable is echo, and the substitution genuinely runs.
+  const leg = { classification: 'WITNESS', rule_id: 'rm-rf-wildcard', reason: 'legacy' };
+  const sem = {
+    classification: 'OPEN',
+    rule_id: null,
+    normalized_action_hash: 'sha256:abc',
+    parser_version: 'action-ir/0.12.0'
+  };
+  const ir = {
+    segments: [{
+      executable: 'echo',
+      argv: [],
+      uncertainty: [{ code: 'command-substitution' }]
+    }]
+  };
+  const m = mergeDecisions(leg, sem, 'enforce', ir);
+  assert.strictEqual(m.active.classification, 'WITNESS');
+});
+
+test('merge enforce: a bare OPEN with NO ir may not retire a legacy WITNESS', () => {
+  const leg = { classification: 'WITNESS', rule_id: 'rm-rf-wildcard', reason: 'legacy' };
+  const sem = { classification: 'OPEN', rule_id: null, normalized_action_hash: 'sha256:abc' };
+  const m = mergeDecisions(leg, sem, 'enforce');
+  assert.strictEqual(m.active.classification, 'WITNESS');
 });
 
 test('merge enforce: non-migrated WITNESS stands when semantic OPEN', () => {
