@@ -240,45 +240,34 @@ const TOOLS = [
       }
     }
   },
-  {
-    name: 'arm_safe_repeat',
-    description: 'Arm a session-scoped safe-repeat lease for one exact normalized action after human confirmation. PAUSE ceiling only — never overrides WITNESS. TTL default 20 minutes, max 10 uses.',
-    inputSchema: {
-      type: 'object',
-      properties: {
-        normalized_action_hash: { type: 'string', description: 'From dry_run_compass / compass log (sha256:...).' },
-        executable: { type: 'string', description: 'Primary executable (e.g. rm, npm).' },
-        cwd: { type: 'string', description: 'Working directory the lease is bound to. Defaults to process cwd.' },
-        parser_version: { type: 'string', description: 'Must match Action IR parser version used to compute the hash.' },
-        max_uses: { type: 'number', default: 10 },
-        ttl_ms: { type: 'number', description: 'Lease TTL in ms (default 20 minutes).' },
-        issued_from_compass_log_id: { type: 'number', description: 'Optional compass_log id that was confirmed.' }
-      },
-      required: ['normalized_action_hash', 'executable']
-    }
-  },
-  {
-    name: 'revoke_safe_repeat',
-    description: 'Revoke one safe-repeat lease by lease_id, or all active leases for this session (all=true).',
-    inputSchema: {
-      type: 'object',
-      properties: {
-        lease_id: { type: 'string' },
-        all: { type: 'boolean', description: 'When true, revoke every active lease for the current session.' }
-      }
-    }
-  },
-  {
-    name: 'list_safe_repeat',
-    description: 'List active (unexpired, unrevoked) safe-repeat leases for the current or given session.',
-    inputSchema: {
-      type: 'object',
-      properties: {
-        session_id: { type: 'string' },
-        limit: { type: 'number', default: 20 }
-      }
-    }
-  }
+  // arm_safe_repeat / revoke_safe_repeat / list_safe_repeat are DELIBERATELY NOT
+  // EXPOSED HERE (removed 2026-07-26). The library functions remain in
+  // lib/safe-repeat.js; only the MCP surface is withdrawn.
+  //
+  // WHY: arming a lease converts a future PAUSE into an OPEN (see
+  // hooks/pre-tool-use.js — an active lease is consumed and the action proceeds).
+  // That is an APPROVAL. The privilege model says approval is an L2 operator act
+  // at a TTY that a lower level cannot reach, and armLease() takes NO operator or
+  // TTY provenance argument at all — its signature cannot distinguish an operator
+  // from a model. The old description said "after human confirmation", which was
+  // prose, not a mechanism. Exposed on MCP to a seat running with
+  // permission_mode="always-approve", it was a path for L0 to approve its own
+  // action off-TTY: dry_run_compass for the hash, arm the lease, proceed.
+  //
+  // It was dormant rather than breached — normalized_action_hash was NULL in all
+  // 6,358 compass_log rows and safe_repeat_leases had never held a row, so the
+  // consumption guard never passed. It would have armed itself the moment the
+  // semantic hash got populated, which is step one of the lease feature.
+  //
+  // The kernel floor cannot cover this: the lease table lives inside chronicle.db,
+  // so denying that path at the sandbox would also kill recall/record/witness.
+  // It has to be closed at this surface or not at all.
+  //
+  // BAR FOR RESTORING: every lease row must carry an L2-TTY provenance receipt
+  // that the consumer verifies and that this MCP path cannot mint.
+  //
+  // dry_run_compass and explain_compass stay — read-only, and genuinely useful to
+  // a seat that wants to know what the gate thinks before acting.
 ];
 
 function ok(id, result) {
@@ -475,34 +464,10 @@ function handleToolCall(name, args) {
         message
       });
     }
-    case 'arm_safe_repeat': {
-      const r = ch.armSafeRepeat({
-        session_id: sid,
-        normalized_action_hash: args.normalized_action_hash,
-        executable: args.executable,
-        cwd: args.cwd || process.cwd(),
-        parser_version: args.parser_version,
-        max_uses: num(args.max_uses),
-        ttl_ms: num(args.ttl_ms),
-        issued_from_compass_log_id: num(args.issued_from_compass_log_id)
-      });
-      return textContent({ ok: true, ...r });
-    }
-    case 'revoke_safe_repeat': {
-      const r = ch.revokeSafeRepeat({
-        lease_id: args.lease_id,
-        session_id: sid,
-        all: !!args.all
-      });
-      return textContent(r);
-    }
-    case 'list_safe_repeat': {
-      const entries = ch.listSafeRepeatLeases({
-        session_id: args.session_id || sid,
-        limit: num(args.limit) ?? 20
-      });
-      return textContent({ count: entries.length, entries });
-    }
+    // Lease cases removed 2026-07-26 — see the note on the TOOLS array above.
+    // Arming a lease is an approval, and this surface cannot prove an operator
+    // made it. Falling through to the default `unknown tool` error is correct:
+    // a withdrawn approval path must fail loudly, not silently no-op.
     default:
       throw new Error(`unknown tool: ${name}`);
   }

@@ -96,15 +96,15 @@ function test(name, fn) { tests.push({ name, fn }); }
 
 // ── Protocol ──────────────────────────────────────────────────────────────────
 
-test('protocol: tools/list returns 18 tools, each with description + inputSchema', async (client) => {
+test('protocol: tools/list returns 15 tools, each with description + inputSchema', async (client) => {
   const r = await client.request('tools/list', {});
   const tools = r.result.tools;
-  assert.strictEqual(tools.length, 18, `expected 18 tools, got ${tools.length}`);
+  assert.strictEqual(tools.length, 15, `expected 15 tools, got ${tools.length}`);
   const expected = [
     'recall', 'record', 'record_method', 'set_goal', 'open_thread', 'resolve_thread',
     'get_state', 'recall_compass', 'confirm_pending', 'list_pending',
     'list_method_candidates', 'promote_method', 'dismiss_method_candidate',
-    'dry_run_compass', 'explain_compass', 'arm_safe_repeat', 'revoke_safe_repeat', 'list_safe_repeat'
+    'dry_run_compass', 'explain_compass'
   ];
   const names = new Set(tools.map(t => t.name));
   for (const n of expected) {
@@ -115,6 +115,32 @@ test('protocol: tools/list returns 18 tools, each with description + inputSchema
     assert.ok(t.inputSchema, `tool ${t.name} missing inputSchema`);
     assert.strictEqual(t.inputSchema.type, 'object', `tool ${t.name} inputSchema.type must be object`);
   }
+});
+
+test('protocol: safe-repeat lease tools are NOT exposed over MCP', async (client) => {
+  // Guard, not bookkeeping. Arming a lease turns a future PAUSE into an OPEN,
+  // which is an APPROVAL — and armLease() carries no operator/TTY provenance, so
+  // this surface cannot prove an operator made it. Exposed to a seat running
+  // permission_mode="always-approve", it let L0 approve its own action off-TTY.
+  // Withdrawn 2026-07-26. Restoring requires an L2-TTY provenance receipt on every
+  // lease row that the consumer verifies and that MCP cannot mint.
+  const r = await client.request('tools/list', {});
+  const names = new Set(r.result.tools.map(t => t.name));
+  for (const forbidden of ['arm_safe_repeat', 'revoke_safe_repeat', 'list_safe_repeat']) {
+    assert.ok(
+      !names.has(forbidden),
+      `${forbidden} is exposed over MCP — that is a self-approval path, see mcp/server.js`
+    );
+  }
+  // And calling it must fail loudly rather than silently no-op.
+  const call = await client.request('tools/call', {
+    name: 'arm_safe_repeat',
+    arguments: { normalized_action_hash: 'sha256:deadbeef', executable: 'rm' }
+  });
+  assert.ok(
+    call.error || (call.result && call.result.isError),
+    'arm_safe_repeat should error as an unknown tool, not succeed silently'
+  );
 });
 
 // ── record ────────────────────────────────────────────────────────────────────

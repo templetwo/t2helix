@@ -2,7 +2,7 @@
 
 // test/sse-contract.js — T2Helix v0.7.0 SSE transport contract test.
 //
-// Proves the same 18 tools and behavior are available over HTTP+SSE as over
+// Proves the same 15 tools and behavior are available over HTTP+SSE as over
 // stdio. The MCP SSE handshake:
 //   1. GET /sse → Content-Type: text/event-stream
 //      Server sends: event: endpoint\ndata: /messages?sessionId=<uuid>\n\n
@@ -196,16 +196,21 @@ test('sse: initialize handshake succeeds', async ({ client, port }) => {
 
 // ── Protocol ──────────────────────────────────────────────────────────────────
 
-test('sse: tools/list returns 18 tools over SSE', async ({ client, port }) => {
+test('sse: tools/list returns 15 tools over SSE', async ({ client, port }) => {
   const r = await client.request(port, 'tools/list', {});
   const tools = r.result.tools;
-  assert.strictEqual(tools.length, 18, `expected 18 tools, got ${tools.length}`);
+  assert.strictEqual(tools.length, 15, `expected 15 tools, got ${tools.length}`);
   const expected = ['recall', 'record', 'record_method', 'set_goal', 'open_thread',
     'resolve_thread', 'get_state', 'recall_compass', 'confirm_pending', 'list_pending',
     'list_method_candidates', 'promote_method', 'dismiss_method_candidate',
-    'dry_run_compass', 'explain_compass', 'arm_safe_repeat', 'revoke_safe_repeat', 'list_safe_repeat'];
+    'dry_run_compass', 'explain_compass'];
   const names = new Set(tools.map(t => t.name));
   for (const n of expected) assert.ok(names.has(n), `tools/list missing ${n}`);
+  // The SSE surface must not re-open what the stdio surface withdrew. Leases are
+  // an approval path with no operator provenance — see mcp/server.js (2026-07-26).
+  for (const forbidden of ['arm_safe_repeat', 'revoke_safe_repeat', 'list_safe_repeat']) {
+    assert.ok(!names.has(forbidden), `${forbidden} exposed over SSE — self-approval path`);
+  }
   for (const t of tools) {
     assert.ok(t.description, `tool ${t.name} missing description`);
     assert.ok(t.inputSchema, `tool ${t.name} missing inputSchema`);
