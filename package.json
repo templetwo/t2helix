@@ -18,7 +18,7 @@
     "integration": "node test/integration.js",
     "test:action-ir": "node test/action-ir.js",
     "test:compass-v2": "node test/compass-v2.js",
-    "test": "node test/smoke.js && node test/regression.js && node test/integration.js && node test/sse-contract.js && node test/import-atlas.js && node test/atlas-acceptance.js && node test/sync-stack.js && node test/action-ir.js && node test/compass-v2.js && node test/codex-adapter.js",
+    "test": "node test/smoke.js && node test/regression.js && node test/integration.js && node test/sse-contract.js && node test/import-atlas.js && node test/atlas-acceptance.js && node test/sync-stack.js && node test/action-ir.js && node test/compass-v2.js && node test/codex-adapter.js && node test/grok-adapter.js",
     "replay-compass": "node scripts/replay-compass.js",
     "sse-contract": "node test/sse-contract.js",
     "test:import-atlas": "node test/import-atlas.js",
@@ -37,11 +37,12 @@
     "sync-stack": "node scripts/sync-stack.js",
     "grok:init": "T2HELIX_DATA_DIR=\"$HOME/.claude/plugins/data/t2helix-templetwo-t2helix\" node -e 'console.log(require(\"./lib/grok-adapter\").grokInit())'",
     "grok:boot": "T2HELIX_DATA_DIR=\"$HOME/.claude/plugins/data/t2helix-templetwo-t2helix\" node -e 'const g=require(\"./lib/grok-adapter\"); g.grokBoot({query: process.argv.slice(1).join(\" \")||\"current context\"}).then(r=>console.dir(r,{depth:1})).catch(console.error)'",
-    "grok:witness": "T2HELIX_DATA_DIR=\"$HOME/.claude/plugins/data/t2helix-templetwo-t2helix\" node -e 'const g=require(\"./lib/grok-adapter\"); const q=process.argv.slice(1).join(\" \")||\"test action\"; console.dir(g.grokWitness(q), {depth:3})'",
+    "grok:witness": "T2HELIX_DATA_DIR=\"$HOME/.claude/plugins/data/t2helix-templetwo-t2helix\" node -e 'const g=require(\"./lib/grok-adapter\"); const q=process.argv.slice(1).join(\" \")||\"test action\"; Promise.resolve(g.grokWitness(q)).then(r=>{console.dir(r,{depth:3}); if(r&&r.blocked)process.exitCode=1}).catch(e=>{console.error(e);process.exitCode=1})'",
     "grok:test": "T2HELIX_DATA_DIR=\"$HOME/.claude/plugins/data/t2helix-templetwo-t2helix\" npm run grok:init && T2HELIX_DATA_DIR=\"$HOME/.claude/plugins/data/t2helix-templetwo-t2helix\" npm run grok:boot -- \"shared chronicle test\" && echo 'Grok + Claude now share the same foundational memory surface.'",
     "codex:init": "T2HELIX_DATA_DIR=\"$HOME/.claude/plugins/data/t2helix-templetwo-t2helix\" node -e 'const c=require(\"./lib/codex-adapter\"); const r=c.codexInit(); console.dir(r,{depth:4}); if(!r.ok) process.exitCode=1'",
     "codex:boot": "T2HELIX_DATA_DIR=\"$HOME/.claude/plugins/data/t2helix-templetwo-t2helix\" node -e 'const c=require(\"./lib/codex-adapter\"); c.codexBoot({query:process.argv.slice(1).join(\" \")||\"current context\"}).then(r=>console.dir(r,{depth:2})).catch(e=>{console.error(e);process.exitCode=1})'",
     "codex:test": "node test/codex-adapter.js",
-    "full-sync": "T2HELIX_DATA_DIR=\"$HOME/.claude/plugins/data/t2helix-templetwo-t2helix\" npm run grok:init && echo 'Grok + Claude now share chronicle (same SQLite, same MCP surface)'"
+    "full-sync": "T2HELIX_DATA_DIR=\"$HOME/.claude/plugins/data/t2helix-templetwo-t2helix\" npm run grok:init && echo 'Grok + Claude now share chronicle (same SQLite, same MCP surface)'",
+    "grok:test-compass": "node test/grok-adapter.js"
   }
 }
