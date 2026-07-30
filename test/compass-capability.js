@@ -649,6 +649,20 @@ test('replay-compass reconstructs a non-Bash shell row instead of replaying it a
   assert.deepStrictEqual(report.weakenings, [], `capability row replayed as a weakening: ${JSON.stringify(report.weakenings)}`);
   assert.deepStrictEqual(report.migrated_softenings, [], `capability row replayed as a softening: ${JSON.stringify(report.migrated_softenings)}`);
   assert.strictEqual(report.agree_legacy, 1, 'the reconstructed row did not re-derive its own verdict');
+
+  // Excluding a row from the counts is correct — it is not evidence of drift —
+  // but it must not make --strict go QUIET on rows it could not judge. Before
+  // this change a truncated row that replayed softer failed --strict; if
+  // excluding it left --strict green, the tripwire would have been disarmed by
+  // the fix. Incomplete coverage gets its own exit code.
+  const { spawnSync } = require('child_process');
+  const run = extra => spawnSync(process.execPath, [
+    path.join(__dirname, '..', 'scripts', 'replay-compass.js'), '--data-dir', dir, '--strict', ...extra
+  ], { encoding: 'utf8', env: { ...process.env, T2HELIX_POLICY_DIR: path.join(__dirname, '..') } });
+  const strict = run([]);
+  assert.strictEqual(strict.status, 3, `--strict must not pass over unadjudicable rows (exit ${strict.status})`);
+  assert.match(strict.stdout, /coverage 50%/, `coverage must be stated as a fraction:\n${strict.stdout}`);
+  assert.strictEqual(run(['--allow-unadjudicable']).status, 0, 'the explicit opt-in must still pass');
 });
 
 console.log(`\n${passed} passed, ${failed} failed`);
