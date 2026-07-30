@@ -113,28 +113,42 @@ test('PreToolUse: PAUSE override loop is single-use end-to-end', () => {
     'single-use: a second retry is denied again');
 });
 
-// ── PreToolUse: fail-open on adversarial input ──────────────────────────────
+// ── PreToolUse: adversarial input is not a clearance ────────────────────────
+//
+// These three asserted `{}` until 0.12.1. `{}` is the OPEN payload, so an
+// unreadable payload was reported to the harness in the exact bytes an evaluated
+// clearance uses, and wrote no compass_log row at all. Exiting 0 with valid JSON
+// is still the contract — the host must not break — but the payload is now a deny
+// carrying NOT_EVALUATED. See test/compass-fail-closed.js for the full floor.
 
-test('PreToolUse: empty stdin → {} exit 0 (fail-open)', () => {
+test('PreToolUse: empty stdin → deny, exit 0 (fail-closed, host intact)', () => {
   const res = spawnSync('node', [path.join(HOOK_DIR, 'pre-tool-use.js')], {
     input: '', env: { ...process.env, T2HELIX_DATA_DIR: tmpDir }, encoding: 'utf8'
   });
   assert.strictEqual(res.status, 0);
-  assert.deepStrictEqual(JSON.parse((res.stdout || '{}').trim() || '{}'), {});
+  const out = JSON.parse((res.stdout || '{}').trim() || '{}');
+  assert.strictEqual(out.hookSpecificOutput.permissionDecision, 'deny');
 });
 
-test('PreToolUse: non-JSON garbage stdin → {} exit 0 (fail-open)', () => {
+test('PreToolUse: non-JSON garbage stdin → deny, exit 0 (fail-closed, host intact)', () => {
   const res = spawnSync('node', [path.join(HOOK_DIR, 'pre-tool-use.js')], {
     input: 'not json at all {{{', env: { ...process.env, T2HELIX_DATA_DIR: tmpDir }, encoding: 'utf8'
   });
   assert.strictEqual(res.status, 0);
-  assert.deepStrictEqual(JSON.parse((res.stdout || '{}').trim() || '{}'), {});
+  const out = JSON.parse((res.stdout || '{}').trim() || '{}');
+  assert.strictEqual(out.hookSpecificOutput.permissionDecision, 'deny');
+  assert.ok(/gate-input-unparseable/.test(out.hookSpecificOutput.permissionDecisionReason),
+    'the reason names which failure path fired');
 });
 
-test('PreToolUse: valid JSON missing tool_name/tool_input → {} exit 0', () => {
+test('PreToolUse: valid JSON missing tool_name/tool_input → deny, exit 0', () => {
   const r = runHook('pre-tool-use.js', { session_id: 'int-missing' });
   assert.strictEqual(r.code, 0);
-  assert.deepStrictEqual(r.out, {});
+  assert.strictEqual(r.out.hookSpecificOutput.permissionDecision, 'deny');
+  const row = ch.db()
+    .prepare(`SELECT classification FROM compass_log WHERE session_id = 'int-missing'`).get();
+  assert.strictEqual(row.classification, 'NOT_EVALUATED',
+    'the audit trail distinguishes "not evaluated" from "allowed"');
 });
 
 // ── PreToolUse: broken native binding (ABI mismatch) — fail-open AND rules survive

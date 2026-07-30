@@ -63,6 +63,7 @@ function preToolVerdict(payload, mode = 'shadow') {
   const { output } = runHook('pre-tool-use.js', payload, mode);
   if (output.hookSpecificOutput) {
     const reason = output.hookSpecificOutput.permissionDecisionReason || '';
+    if (reason.includes('NOT EVALUATED')) return 'NOT_EVALUATED';
     return reason.includes('[soft-deny]') ? 'PAUSE' : 'WITNESS';
   }
   if (output.systemMessage) return 'ERROR_ALLOW';
@@ -166,6 +167,12 @@ for (const specimen of CORPUS) {
 
 // These assertions characterize unresolved findings. They make the audit
 // reproducible but must not be read as approval of OPEN behavior.
+//
+// The two hook columns moved in 0.12.1: a payload the gate cannot read now comes
+// back NOT_EVALUATED instead of ERROR_ALLOW (a bare `{}` plus a systemMessage) or
+// a plain OPEN. The other four seats are unchanged, and the OPEN rows below are
+// still the finding — a wrapper key the adapter does not know about is read, not
+// mis-read, so nothing signals that the destructive text was never seen.
 const destructive = 'rm -rf /tmp/*';
 const UNMATCHABLE = [
   {
@@ -186,7 +193,7 @@ const UNMATCHABLE = [
   {
     id: 'non-string-command',
     payload: { tool_name: 'Bash', tool_input: { command: { raw: destructive } } },
-    expected: ['ERROR_ALLOW', 'ERROR_ALLOW', 'OPEN', 'UNAVAILABLE', 'ERROR', 'ERROR']
+    expected: ['NOT_EVALUATED', 'NOT_EVALUATED', 'NOT_EVALUATED', 'UNAVAILABLE', 'ERROR', 'ERROR']
   },
   {
     id: 'deeply-nested-command',
@@ -206,7 +213,7 @@ const UNMATCHABLE = [
   {
     id: 'null-payload',
     payload: null,
-    expected: ['OPEN', 'OPEN', 'OPEN', 'OPEN', 'OPEN', 'OPEN']
+    expected: ['NOT_EVALUATED', 'NOT_EVALUATED', 'NOT_EVALUATED', 'OPEN', 'OPEN', 'OPEN']
   }
 ];
 
@@ -300,20 +307,19 @@ test('STILL OPEN: quoted and reordered git safety flags evade every mode', () =>
   assert.deepStrictEqual(modeMatrix('git reset HEAD~1 --hard'), ALL_OPEN);
 });
 
-test('PRE-EXISTING DEFECT: git-push-force is superlinear on whitespace runs', () => {
-  // Not introduced here — this idiom shipped in git-push-force before tonight.
-  // `(?:[^|;&]*\s+)?` lets [^|;&]* and \s+ and the following \s+ all compete for
-  // the same whitespace, which is cubic. Recorded as a test so the cost is a
-  // number rather than a hunch, and so a future fix has a baseline to beat.
-  // Deliberately NOT asserted as fast: asserting speed here would fail today and
-  // that is the point of filing it instead of patching it blind.
-  const re = /git\s+push\s+(?:[^|;&]*\s+)?(?:--force(?!-with-lease)|-f)\b/;
+test('FIXED: git-push-force is linear on whitespace runs', () => {
+  // Filed here as a characterization on 2026-07-26 (51ms at 400 spaces, 141,887ms
+  // at 4,000) and left unpatched pending review. The idiom is now
+  // `(?:[^|;&\s]+\s+)*` — token-then-whitespace, so nothing competes for the same
+  // run — and the number is an assertion rather than a note. Equivalence over the
+  // token grammar is proven in test/compass-fail-closed.js.
+  const re = compass.loadRules().find(r => r.id === 'git-push-force')._regex;
   const sample = 'git push ' + ' '.repeat(400) + 'x';
   const started = Date.now();
   re.test(sample);
   const elapsed = Date.now() - started;
   console.log(`        [note] git-push-force took ${elapsed}ms on ${sample.length} bytes of whitespace`);
-  assert.ok(elapsed >= 0); // characterization only — see open thread #15
+  assert.ok(elapsed < 50, `${elapsed}ms on 400 spaces — the cubic idiom is back`);
 });
 
 test('regression: enforce mode may not clear on unresolved command substitution', () => {
@@ -348,33 +354,34 @@ test('regression: widened rm patterns stay linear-time (no catastrophic backtrac
     `${RM} ` + '"-rf" '.repeat(16000) + 'X',          // quote-heavy
     `${RM} ` + '--recursive --force '.repeat(2000) + 'X'
   ];
-  // CHARACTERIZATION, not an assertion — it would fail today on the SHIPPED
-  // git-push-force pattern, and that is the finding rather than a reason to skip it.
-  // Measured: `git push` + N contiguous spaces, shipped pattern:
-  //     400 spaces ->    51 ms      1000 spaces ->   809 ms      4000 -> 141887 ms
-  // The PreToolUse budget is 5000 ms and Bash is the only tool whose haystack is
-  // uncapped, so a hung hook emits no decision and the call proceeds UNGATED —
-  // starving every rule after it in the list. Practical exploitability is LOW: it
-  // needs a CONTIGUOUS whitespace run; long trailing text and many operands stay
-  // at ~0.2 ms, so this is latent rather than a daily hazard.
-  //
-  // A candidate fix is verified linear and strictly more correct:
+  // The whitespace shapes used to be SKIPPED here as known-slow, which left the
+  // suite reporting "stays linear" about the subset that never explodes. The fix
+  // that unblocked them:
   //     (?:[^|;&]*\s+)?   ->   (?:[^|;&\s]+\s+)*
-  // Unambiguous token-then-whitespace, so nothing competes for the same run:
-  // 0.024-0.082 ms across all shapes above. It matches everything the shipped
-  // pattern matches, still rejects --force-with-lease / plain push / git pull,
-  // and additionally catches the quoted `"--force"` form. NOT APPLIED: two pattern
-  // edits tonight each caused a regression (rule-order shadowing; this same cubic
-  // idiom), so a third goes through review with a clear head. See open thread #15.
+  // Unambiguous token-then-whitespace, so nothing competes for the same run.
+  // CORRECTION to the 2026-07-26 note: the replacement is EQUIVALENT, not wider —
+  // an exhaustive walk of the token grammar (715,236 inputs, 209,312 of them
+  // matches) finds zero divergence in either direction, and in particular it does
+  // NOT catch quoted `"--force"`, which the test above still records as OPEN.
   const timings = [];
+  const slow = [];
   for (const input of adversarial) {
-    if (/\s{100,}/.test(input) && /git\s+(push|reset)/.test(input)) continue; // known-slow, measured above
     const started = Date.now();
     modeMatrix(input);
-    timings.push(`${input.length}b:${Date.now() - started}ms`);
+    const ms = Date.now() - started;
+    timings.push(`${input.length}b:${ms}ms`);
+    if (ms > 500) slow.push(`${input.slice(0, 12)}… ${input.length}b:${ms}ms`);
   }
-  console.log(`        [note] flag-token shapes stay linear — ${timings.join(' ')}`);
-  assert.ok(timings.length > 0);
+  // 500ms — RESTORED 2026-07-30, and the restoration is the point. The previous
+  // round had to relax this to 1500ms because `rm -` + 16,000 r's cost ~870ms
+  // through the full matrix (and did so before that fix too). The cause was named
+  // there and is now fixed at the source: the credential detector's url-auth
+  // alternative `[a-z][a-z0-9+.-]*://` rescanned a long unbroken run from every
+  // start position, and lib/secrets.js now anchors it with `(?<![a-z])`. Same
+  // shape now costs ~30ms. If this ceiling has to be loosened again, the honest
+  // move is to name the new cause here rather than raise the number.
+  console.log(`        [note] adversarial shapes — ${timings.join(' ')}`);
+  assert.deepStrictEqual(slow, [], `shapes exceeded 500ms: ${slow.join(', ')}`);
 });
 
 test('regression: quoting a dangerous command as prose is still OPEN', () => {
@@ -499,10 +506,12 @@ for (const [id, command] of IDENTITY_CASES) {
   console.log(`\n${passed} passed, ${failed} failed`);
   if (failed === 0) {
     console.log('NOTE: the rm-flag, prefix-downgrade and git-flag divergences are FIXED and now');
-    console.log('      asserted as regressions above. Still UNRESOLVED by decision, not oversight:');
-    console.log('      (a) non-Bash tools that shell out are ungated — every destructive rule is');
-    console.log('          tool-scoped to Bash; (b) malformed payloads return a permissive OPEN;');
-    console.log('      (c) an object-valued command fails open with no compass_log row.');
+    console.log('      asserted as regressions above. So are (b) and (c) as of 0.12.1: a malformed');
+    console.log('      payload and an object-valued command now deny as NOT_EVALUATED and write a');
+    console.log('      compass_log row, and the cubic git-push-force idiom is gone. Still');
+    console.log('      UNRESOLVED by decision, not oversight: (a) non-Bash tools that shell out are');
+    console.log('      ungated — every destructive rule is tool-scoped to Bash; (d) the credential');
+    console.log('      detector is quadratic on a long unbroken alphanumeric run (~740ms at 40KB).');
     console.log('      See COMPASS_CONSISTENCY.md and open thread #15.');
   }
   process.exit(failed ? 1 : 0);

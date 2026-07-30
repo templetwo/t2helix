@@ -70,6 +70,32 @@ Under `defaultMode: bypassPermissions` (the typical Claude Code config), `permis
 
 WITNESS has no override path — those operations require manual rule edits.
 
+## When the gate cannot decide (v0.12.1)
+
+A PreToolUse hook that fails internally used to emit `{}`, which is the same payload an
+evaluated OPEN emits — so an unreadable payload or a hook killed at its 5s timeout was
+indistinguishable from a cleared call, and left no `compass_log` row. Those paths now
+classify `NOT_EVALUATED`: the call is denied, the row is written, and no override token is
+issued (there is no verdict to override). `classify()` also runs on a time budget and
+stops with `NOT_EVALUATED` rather than finishing a rule list it never got through, so one
+slow pattern cannot starve the rules after it.
+
+| Env var | Default | Effect |
+| --- | --- | --- |
+| `T2HELIX_GATE_FAILURE_MODE` | `deny` | `open` restores the pre-0.12.1 permissive behaviour for non-evaluation paths only. Never affects a real WITNESS or PAUSE; the audit row is written either way. |
+| `T2HELIX_GATE_BUDGET_MS` | `3500` | Above this, the hook will not return a clearance it spent too long producing. |
+| `T2HELIX_CLASSIFY_BUDGET_MS` | `1200` | Wall clock for the whole rule loop. |
+| `T2HELIX_RULE_BUDGET_MS` | `400` | A rule slower than this is named in the row's evidence. |
+| `T2HELIX_SEMANTIC_SKIP_BYTES` | `4096` | Above this size, an action the legacy rules already classified WITNESS skips the semantic leg. WITNESS is the top of the lattice, so that leg could only clear it — skipping fails closed. PAUSE and OPEN are never skipped at any size, because for those the semantic leg can escalate. |
+| `T2HELIX_SEMANTIC_BUDGET_MS` | `1200` | If the legacy leg already spent this long, the semantic leg is not entered and the legacy verdict stands. |
+
+A budget cannot interrupt a regex already running, so the second half of the defence is
+that the patterns themselves are linear. `git-push-force` and `no-verify` are written so
+they cannot restart on every occurrence of their own trigger, and `lib/secrets.js` anchors
+the URL-scheme alternative so it cannot rescan a long unbroken token from every offset.
+Two rules remain quadratic in trigger count and are named in `test/compass-fail-closed.js`
+(`KNOWN_SUPERLINEAR`) rather than left implicit.
+
 ## Where state lives
 
 Under Claude Code (the normal install path), data lives under:
