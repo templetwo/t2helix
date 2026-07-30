@@ -141,7 +141,10 @@ test('an unusable bind host fails closed instead of falling back to all interfac
   try {
     s = await spawnServer({ T2HELIX_SSE_HOST: '203.0.113.1' });
   } catch (e) {
-    assert.match(e.message, /EADDRNOTAVAIL|exited/, `expected a hard failure, got: ${e.message}`);
+    // Require the KERNEL's reason, not merely "the process exited". A bare
+    // /exited/ is satisfied by any crash — a syntax error would read as
+    // "fails closed" while proving nothing about the bind.
+    assert.match(e.message, /EADDRNOTAVAIL/, `expected a bind refusal from the kernel, got: ${e.message}`);
     return;
   }
   s.child.kill('SIGTERM');

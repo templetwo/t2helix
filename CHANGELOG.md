@@ -20,7 +20,17 @@ All notable changes to t2helix are documented here. Format loosely follows
 ### Added
 - **Tests** — `test/sse-bind.js` (loopback default, advertised host == actual
   bind, off-box probe, opt-in warning), `test/witness-relay.js` (argv
-  construction and rejection of shell-metacharacter env values).
+  construction and rejection of shell-metacharacter env values, plus three legs
+  that run the monitor as a real process: a hostile `JETSON_HOST`/`JETSON_USER`
+  must exit 2 with the variable named and never create a benign marker file, and
+  under a benign env the call site must invoke `execFile('ssh', sshArgv())` and
+  no shell binary — mutation-proved against a restored injection).
+
+### Documentation
+- **`tools/witness-relay/README.md`** — documents the new plain-name restriction
+  on `JETSON_USER` / `JETSON_HOST`, the exit-2 startup behavior, and the
+  legitimate values (IPv6 literals, `_gateway`, dash-leading `ssh_config`
+  aliases) the fail-closed validation now rejects.
 
 ## [0.12.0] — Compass V2: Action IR, semantic Guard, safe-repeat leases
 
