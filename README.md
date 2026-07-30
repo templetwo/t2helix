@@ -36,8 +36,8 @@ Plus an in-process MCP server exposing eighteen tools:
 | `resolve_thread` | Close an open thread by id with a resolution. Stamps `resolved_at` + `resolution`; thread drops out of `get_state.open_threads`. |
 | `get_state` | Read current goal + recent open threads + recent insights. |
 | `recall_compass` | Query the compass log of past PreToolUse classifications (filter by classification, matched_only, limit). |
-| `confirm_pending` | Approve a pending PAUSE confirmation by token. Single-use; the retry consumes the approval. |
-| `list_pending` | Review unexpired pending/approved/used confirmation requests. |
+| `confirm_pending` | Approve a pending PAUSE confirmation by token (from `list_pending`, not from the deny message). Single-use; the retry consumes the approval. The origin of every approval is recorded. |
+| `list_pending` | Review unexpired pending/approved/used confirmation requests, including the origin each approval arrived from. |
 | `list_method_candidates` | (v0.4) Review the queue of auto-distilled method **candidates** the Stop hook produced from successful sessions. Quarantined — they never surface in recall until promoted. Filter by `status` (`pending`/`promoted`/`dismissed`). |
 | `promote_method` | (v0.4) Promote a candidate (by `id`) to a trusted, surfaceable `domain:'method'` insight (`source:promoted`). The only path from quarantine onto the recalled surface. |
 | `dismiss_method_candidate` | (v0.4) Reject a candidate (by `id`) so it leaves the review queue without becoming a method. |
@@ -63,10 +63,11 @@ Action Intermediate Representation sits between hook input and policy:
 Under `defaultMode: bypassPermissions` (the typical Claude Code config), `permissionDecision: ask` is silently overridden by the harness. To preserve a real safety surface for PAUSE-classified actions, T2Helix routes PAUSE through `deny` with a token-based override:
 
 1. Tool call matches a PAUSE rule (e.g., a `-----BEGIN RSA PRIVATE KEY-----` pattern in a Bash command).
-2. Hook creates a `pending_confirmations` row keyed by `(session_id, sha256(action_summary))`, returns `deny` with the token in the reason text.
-3. To approve: call `mcp__t2helix__confirm_pending` with the token.
-4. Retry the original action within 10 minutes. Hook finds the matching approval, consumes it, lets the call through, and re-logs in `compass_log` as OPEN with `reason: "approved via token X (consumed)"`.
-5. The approval is single-use. A new approval is needed for another retry.
+2. Hook creates a `pending_confirmations` row keyed by `(session_id, sha256(action_summary))` and returns `deny`. The reason text names the request by **id** and says approval is required; it does **not** carry the token. The deny string is read by the party being denied, so the gate does not volunteer the credential that lifts it.
+3. Find the request: `list_pending` shows what is awaiting approval, with its token.
+4. To approve: call `mcp__t2helix__confirm_pending` with that token. The approval is recorded with the origin it arrived from (`mcp` for this surface, `unattributed` when a caller names none) and whether it came from a TTY. Nothing is gated on either — they are recorded so the row states what it is.
+5. Retry the original action within 10 minutes. Hook finds the matching approval, consumes it, lets the call through, and re-logs in `compass_log` as OPEN with `user_override: "token:<id> origin=<origin>"`.
+6. The approval is single-use. A new approval is needed for another retry.
 
 WITNESS has no override path — those operations require manual rule edits.
 

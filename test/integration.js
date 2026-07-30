@@ -74,17 +74,21 @@ test('PreToolUse: WITNESS action → deny, no override token', () => {
     'WITNESS must NOT mint an override token');
 });
 
-test('PreToolUse: PAUSE action → deny with confirm_pending token', () => {
+test('PreToolUse: PAUSE action → deny naming a pending request, not its token', () => {
+  const sid = 'int-pause';
   const r = runHook('pre-tool-use.js', {
-    session_id: 'int-pause',
+    session_id: sid,
     tool_name: 'Bash',
     tool_input: { command: 'echo aws_secret=abc' }
   });
   assert.strictEqual(r.code, 0);
   assert.strictEqual(r.out.hookSpecificOutput.permissionDecision, 'deny');
-  assert.ok(/\[soft-deny\]/.test(r.out.hookSpecificOutput.permissionDecisionReason), 'PAUSE is a soft-deny');
-  assert.ok(/confirm_pending with token="[0-9a-f]+"/.test(r.out.hookSpecificOutput.permissionDecisionReason),
-    'PAUSE must mint an override token');
+  const reason = r.out.hookSpecificOutput.permissionDecisionReason;
+  assert.ok(/\[soft-deny\]/.test(reason), 'PAUSE is a soft-deny');
+  const pending = ch.listPendingConfirmations({ session_id: sid, limit: 10 });
+  assert.strictEqual(pending.length, 1, 'PAUSE must mint a confirmation request');
+  assert.ok(reason.includes(`#${pending[0].id}`), 'the deny names the request by id');
+  assert.ok(!reason.includes(pending[0].token), 'the deny must not carry the token');
 });
 
 // ── PreToolUse: full PAUSE override loop (mint → approve → consume → re-deny) ─
@@ -93,14 +97,16 @@ test('PreToolUse: PAUSE override loop is single-use end-to-end', () => {
   const sid = 'int-override';
   const payload = { session_id: sid, tool_name: 'Bash', tool_input: { command: 'echo api_key=zzz' } };
 
-  // 1. First call mints a token.
+  // 1. First call mints a request. The token is found through list_pending —
+  // the deny string does not carry it.
   const first = runHook('pre-tool-use.js', payload);
-  const m = /token="([0-9a-f]+)"/.exec(first.out.hookSpecificOutput.permissionDecisionReason);
-  assert.ok(m, 'first call mints a token');
-  const token = m[1];
+  assert.strictEqual(first.out.hookSpecificOutput.permissionDecision, 'deny', 'first call denies');
+  const pending = ch.listPendingConfirmations({ session_id: sid, limit: 10 });
+  assert.strictEqual(pending.length, 1, 'first call mints a confirmation request');
+  const token = pending[0].token;
 
   // 2. Approve it (as the confirm_pending MCP tool would).
-  const approval = ch.approveConfirmation({ token });
+  const approval = ch.approveConfirmation({ token, origin: 'mcp' });
   assert.strictEqual(approval.ok, true, 'token approves');
 
   // 3. Retry the identical action → approval consumed, tool let through.

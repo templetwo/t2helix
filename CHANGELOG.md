@@ -3,6 +3,31 @@
 All notable changes to t2helix are documented here. Format loosely follows
 [Keep a Changelog](https://keepachangelog.com/); versioning is [SemVer](https://semver.org/).
 
+## [Unreleased] — Approval credential and approval provenance
+
+### Changed
+- **The PAUSE deny reason no longer carries the override token.** It names the
+  pending request by id and says approval is required; the token is found through
+  `list_pending`. The deny string is read by the party being denied, so the gate
+  was volunteering the credential that lifts it. `renderDecision` still takes
+  `opts.token` — as a signal that a request exists, never as content.
+- **`compass_log.user_override`** on a consumed approval is now
+  `token:<pending_id> origin=<origin>` rather than the bare pending id, so the log
+  states which surface the approval came from. The separator is a space because
+  the colon form matches `lib/secrets.js`'s own assignment pattern and would be
+  scrubbed to `[REDACTED]` by any surface that redacts.
+
+### Added
+- **Approval provenance** — `pending_confirmations.approved_origin` and
+  `approved_tty` (additive migration). `approveConfirmation({ token, origin })`
+  records the origin its caller states; `mcp/server.js` hardcodes `'mcp'` so a
+  caller cannot declare its own, and an unnamed origin records `unattributed`
+  rather than NULL. Nothing gates on either field — they exist so an approval row
+  can no longer read as operator-driven when it was not.
+- **`test/approval-provenance.js`** — the deny/message strings carry no token, the
+  override loop still closes through `list_pending`, and every approval records
+  where it came from.
+
 ## [0.12.0] — Compass V2: Action IR, semantic Guard, safe-repeat leases
 
 Turns the compass from raw-string gating into an action-aware Guard layer while

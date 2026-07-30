@@ -102,7 +102,13 @@ CREATE TABLE IF NOT EXISTS pending_confirmations (
   expires_at INTEGER NOT NULL,
   -- v0.12 semantic identity (see the compass_log note above).
   normalized_action_hash TEXT,
-  parser_version TEXT
+  parser_version TEXT,
+  -- Approval provenance. An approval turns a soft-deny into an allow, so the row
+  -- must say where it arrived from; a NULL here means the approval predates the
+  -- column, which is 'unattributed', not 'operator'. approved_tty is the raw
+  -- fact at approval time — nothing gates on it.
+  approved_origin TEXT,
+  approved_tty INTEGER
 );
 
 CREATE INDEX IF NOT EXISTS idx_pending_token ON pending_confirmations(token);
