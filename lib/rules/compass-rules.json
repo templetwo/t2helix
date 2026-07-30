@@ -19,7 +19,7 @@
       "id": "git-push-force",
       "classification": "WITNESS",
       "tool": "Bash",
-      "pattern": "git\\s+push\\s+(?:[^|;&]*\\s+)?(?:--force(?!-with-lease)|-f)\\b",
+      "pattern": "git\\s+push\\s+(?:[^|;&\\s]+\\s+)*(?:--force(?!-with-lease)|-f)\\b",
       "reason": "Force push rewrites remote history. --force-with-lease is safer; verify no collaborator commits will be lost."
     },
     {

@@ -111,6 +111,9 @@ ship explicit-only, measure the generated-vs-promoted ratio first.
 ### Classifications
 
 - `OPEN` — allowed (empty hook output).
+- `NOT_EVALUATED` — **the compass reached no verdict**: unreadable payload, throwing
+  classifier, or a rule budget that ran out mid-list. Denies, no override token, and
+  writes a `compass_log` row so "never evaluated" is distinguishable from "allowed".
 - `WITNESS` — **hard deny, no override**: `rm -rf` wildcards, `git push --force`,
   `git reset --hard`, `drop table/database`, prod-mutating `kubectl/terraform/helm/aws/
   gcloud` (read-only verbs like get/list/describe are deliberately *not* gated),
@@ -132,12 +135,34 @@ never be double-spent across racing hook processes), and re-logs the call as `OP
 ## The fail-open / fail-safe contract (the invariant that governs every hook)
 
 Hooks must **never break the host CLI**. Every hook (`hooks/*.js`) has the same shape:
-a `main()` wrapped in `try/catch` that always writes `{}` and exits 0, plus a
-`main().catch()` last-resort fail-open. When editing hooks, preserve this: an unexpected
-throw becomes "allow + continue," never a crash. The one deliberate exception is gating
-safety — `classify()` reads only the rules file, so even with the DB dead the headline
-denials (`rm -rf /`, force-push, drop-table) still fire (fail-*safe*), while the
-memory-coupling escalation merely degrades to silent.
+a `main()` wrapped in `try/catch` that always exits 0 with valid JSON, plus a
+`main().catch()` last resort. When editing hooks, preserve this: an unexpected throw
+becomes a decision, never a crash. `classify()` reads only the rules file, so even with
+the DB dead the headline denials (`rm -rf /`, force-push, drop-table) still fire
+(fail-*safe*), while the memory-coupling escalation merely degrades to silent.
+
+**PreToolUse is the exception, and 0.12.1 changed it.** Every other hook writes `{}` on
+an internal failure. PreToolUse cannot: `{}` is also the payload an evaluated OPEN emits,
+so an unreadable payload, a throwing classifier and a hook the harness killed at its 5s
+timeout were all reported in the same bytes as "looked at it, it's fine" — and wrote no
+`compass_log` row at all, because the table's three classifications can only say what an
+evaluation *found*. There is now a fourth, `NOT_EVALUATED` (`lib/compass.js`), for the
+decision the compass did not reach. It denies, it writes the row that says evaluation did
+not happen, and it mints **no override token** — a non-evaluation has nothing to override,
+and a token there would let a caller stall the gate and then approve its way past it.
+Use `compass.isClearance()` rather than `=== 'OPEN'` at any allow/block site so a
+classification added later cannot default to allowed.
+
+The four non-evaluation paths: `gate-input-unparseable`, `gate-payload-no-tool`,
+`gate-classifier-failed`, `classify-budget-exceeded` / `gate-budget-exceeded`. The
+timeout itself is not among them — a killed process emits nothing no matter what the code
+says, so the defence there is the budget: `classify()` checks the clock before each rule
+and stops with `NOT_EVALUATED` rather than reaching the end of a list it never finished,
+and the hook refuses to hand back a clearance it took more than `T2HELIX_GATE_BUDGET_MS`
+to produce. `T2HELIX_GATE_FAILURE_MODE=open` restores the old permissive behaviour for
+these paths only — it never touches a real WITNESS or PAUSE — and the row is still written
+so the hatch cannot hide a gap. It exists because a gate that denies everything and cannot
+be switched off from outside the session is a brick, not a safeguard.
 
 `stderr` is used to make *dropped writes visible* without breaking flow (e.g. a dropped
 `recordCompassFire` would otherwise leave a misleading half-chain). Keep that pattern:
