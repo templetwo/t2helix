@@ -47,6 +47,25 @@ async function main() {
     if (e && e.code === 'T2HELIX_DRIVER_UNAVAILABLE') emitDegradedWarning();
   }
 
+  // Ruleset provenance, resolved once and stamped on EVERY compass_log write
+  // below — the lease and override paths included, or those rows stay as
+  // ambiguous as the ones this is here to fix. The ruleset varies with
+  // T2HELIX_DATA_DIR and with the repo's .t2helix/policy.json, so a verdict
+  // recorded without it cannot be reconstructed later even in principle.
+  let provenance = {};
+  try {
+    const p = legacyCompass.rulesetProvenance();
+    provenance = {
+      ruleset_hash: p.ruleset_hash,
+      ruleset_source: p.ruleset_source,
+      ruleset_manifest: p.manifest,
+      rule_count: p.rule_count,
+      rules_eligible: legacyCompass.eligibility({ tool_name, tool_input }).rules_eligible
+    };
+  } catch (e) {
+    process.stderr.write(`[t2helix] ruleset provenance unavailable: ${e.message}\n`);
+  }
+
   let v2;
   try {
     v2 = classifyV2({ tool_name, tool_input }, { has_goal, cwd: process.cwd() });
@@ -131,7 +150,8 @@ async function main() {
             normalized_action_hash: semanticHash,
             parser_version: parserVersion,
             message_version: MESSAGE_VERSION,
-            shadow_json: v2.shadow
+            shadow_json: v2.shadow,
+            ...provenance
           });
         } catch (_) {}
         process.stdout.write(JSON.stringify({}));
@@ -152,7 +172,8 @@ async function main() {
       evidence_json: result.evidence || null,
       parser_version: parserVersion,
       message_version: MESSAGE_VERSION,
-      shadow_json: v2.shadow
+      shadow_json: v2.shadow,
+      ...provenance
     });
   } catch (e) {
     process.stderr.write(`[t2helix] logCompass dropped: ${e.message}\n`);
@@ -200,7 +221,8 @@ async function main() {
             normalized_action_hash: semanticHash,
             parser_version: parserVersion,
             message_version: MESSAGE_VERSION,
-            shadow_json: v2.shadow
+            shadow_json: v2.shadow,
+            ...provenance
           });
         } catch (_) {}
         process.stdout.write(JSON.stringify({}));

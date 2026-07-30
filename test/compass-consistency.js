@@ -169,11 +169,6 @@ for (const specimen of CORPUS) {
 const destructive = 'rm -rf /tmp/*';
 const UNMATCHABLE = [
   {
-    id: 'unknown-tool',
-    payload: { tool_name: 'Mystery', tool_input: { command: destructive } },
-    expected: ['OPEN', 'OPEN', 'OPEN', 'OPEN', 'OPEN', 'OPEN']
-  },
-  {
     id: 'missing-tool-input',
     payload: { tool_name: 'Bash' },
     expected: ['OPEN', 'OPEN', 'OPEN', 'OPEN', 'OPEN', 'OPEN']
@@ -268,6 +263,32 @@ test('STILL OPEN: long and quoted rm flags are allowed in the default mode', () 
   assert.deepStrictEqual(
     modeMatrix('rm "-rf" /tmp/*'),
     { legacy: 'OPEN', shadow: 'OPEN', enforce: 'WITNESS' }
+  );
+});
+
+test('regression: an unknown tool carrying a shell command is no longer ungated', async () => {
+  // Was OPEN on all six seats, filed under UNMATCHABLE. Every rule declared
+  // tool:"Bash" and classify() skipped any rule whose tool did not equal the
+  // tool name, so a tool that ran a shell under any other name was never
+  // evaluated — and logged OPEN, indistinguishable from evaluated-and-cleared.
+  // Rules now bind to the shell CAPABILITY, so the tool's name stops deciding
+  // whether the floor applies.
+  const payload = { tool_name: 'Mystery', tool_input: { command: destructive } };
+  assert.deepStrictEqual(
+    [
+      preToolVerdict(payload, 'shadow'),
+      preToolVerdict(payload, 'off'),
+      (await grok.grokWitness(payload, { session_id: 'unknown-tool-grok' })).classification,
+      withMode('shadow', () => codex.codexCompassCheck(payload).classification),
+      mcpVerdict('dry_run_compass', payload),
+      mcpVerdict('explain_compass', payload)
+    ],
+    ['WITNESS', 'WITNESS', 'WITNESS', 'WITNESS', 'WITNESS', 'WITNESS']
+  );
+  // The name is not what makes it dangerous: same payload, same verdict as Bash.
+  assert.strictEqual(
+    compass.classify(payload).rule_id,
+    compass.classify(structured(destructive)).rule_id
   );
 });
 

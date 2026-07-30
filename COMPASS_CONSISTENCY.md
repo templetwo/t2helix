@@ -47,7 +47,7 @@ The command embedded in these specimens was `rm -rf /tmp/*` wherever a command-s
 
 | Payload shape | Claude V2 hook | Claude hook, V2 off | Grok | Codex | MCP dry-run / explain |
 |---|---:|---:|---:|---:|---:|
-| unknown `tool_name` | `OPEN` allow | `OPEN` allow | `OPEN` | `OPEN` | `OPEN` |
+| unknown `tool_name` — **superseded, see below** | `OPEN` allow | `OPEN` allow | `OPEN` | `OPEN` | `OPEN` |
 | missing `tool_input` | `OPEN` allow | `OPEN` allow | `OPEN` | `OPEN` | `OPEN` |
 | alternate key `{cmd: ...}` | `OPEN` allow | `OPEN` allow | `OPEN` | `OPEN` | `OPEN` |
 | nested `{request:{command:...}}` | `OPEN` allow | `OPEN` allow | `OPEN` | `OPEN` | `OPEN` |
@@ -57,6 +57,8 @@ The command embedded in these specimens was `rm -rf /tmp/*` wherever a command-s
 | object-valued `command` | error message + allow | error message + allow | `OPEN` | `UNAVAILABLE` | JSON-RPC error |
 
 The core cause is that `actionString()` uses an empty string when the Bash `command` field is absent, while rules are tool- and string-shape-specific. Unknown tools also cannot match Bash rules. No boundary distinguishes “parsed and safe enough to evaluate” from “no matchable action was supplied.”
+
+**Superseded for the unknown-`tool_name` row.** Rules no longer bind to a tool NAME alone. `tool: "Bash"` normalizes to the shell CAPABILITY, and any tool whose input carries a `command` or `script` string is evaluated against the same floor, so all six seats now return `WITNESS` for that specimen. The remaining rows stand: an alternate key (`cmd`), a nested command, an empty command, and a null payload are still not treated as actions. The boundary this finding asked for now exists in part — `compass_log.rules_eligible` records how many rules could evaluate the call, so `0` distinguishes “never evaluated” from “evaluated and cleared,” and `ruleset_hash` names the exact ruleset that produced the verdict. Deciding whether an unevaluatable payload should FAIL CLOSED remains the operator policy decision this audit named.
 
 The non-string case exposes a second inconsistency: the legacy regex test coerces the object, but `summarizeAction()` later calls `.slice()` and throws. The Claude hook catches that and emits only a `systemMessage`, which is not a deny. Grok swallows the exception and keeps its initialized `OPEN`; Codex correctly avoids calling it clearance by returning `UNAVAILABLE`; MCP surfaces the exception. PostToolUse also drops the action record after the same summary failure, so this input has neither a reliable verdict nor an `action:<hash>` outcome link.
 
