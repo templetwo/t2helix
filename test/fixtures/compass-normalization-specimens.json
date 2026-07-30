@@ -1,6 +1,53 @@
 {
   "version": "0.12.0",
-  "description": "Haystack-normalization corpus: quoted / long-form flag bypasses, git reset flag position, and the prose corpus that normalization must not move.",
+  "description": "Haystack-normalization corpus: quoted / long-form flag bypasses, git reset flag position, the prose corpus that normalization must not move, and the '#' boundary the reset token walk deliberately does not parse.",
+  "comment_boundary": [
+    {
+      "id": "comment-fp-plain",
+      "command": "git reset HEAD~1 # avoid --hard",
+      "pre_j": "OPEN",
+      "post_j": "WITNESS",
+      "post_j_rule": "git-reset-hard",
+      "kind": "false_positive",
+      "note": "A trailing shell comment is argument text to a token walk. Fails SAFE (deny)."
+    },
+    {
+      "id": "comment-fp-soft",
+      "command": "git reset --soft HEAD~1 # not --hard",
+      "pre_j": "OPEN",
+      "post_j": "WITNESS",
+      "post_j_rule": "git-reset-hard",
+      "kind": "false_positive",
+      "note": "Same shape. The legacy layer already cannot tell prose from invocation."
+    },
+    {
+      "id": "comment-catch-ref-branch",
+      "command": "git reset refs/heads/topic#1 --hard",
+      "pre_j": "OPEN",
+      "post_j": "WITNESS",
+      "post_j_rule": "git-reset-hard",
+      "kind": "real_catch",
+      "note": "A git ref may contain '#'. Excluding '#' from the token class loses this."
+    },
+    {
+      "id": "comment-catch-ref-short",
+      "command": "git reset feature#42 --hard",
+      "pre_j": "OPEN",
+      "post_j": "WITNESS",
+      "post_j_rule": "git-reset-hard",
+      "kind": "real_catch",
+      "note": "Issue-numbered branch names are ordinary. Same loss."
+    },
+    {
+      "id": "comment-catch-path",
+      "command": "git reset HEAD~1 -- a#b.txt --hard",
+      "pre_j": "OPEN",
+      "post_j": "WITNESS",
+      "post_j_rule": "git-reset-hard",
+      "kind": "real_catch",
+      "note": "A path may contain '#'. Same loss."
+    }
+  ],
   "quoted_flag_bypasses": [
     {
       "id": "rm-double-quoted-rf",
