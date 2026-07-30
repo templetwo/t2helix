@@ -39,6 +39,93 @@ All notable changes to t2helix are documented here. Format loosely follows
   summary was truncated as `unreplayable` instead of replaying it and
   manufacturing a false softening.
 
+## [Unreleased] — Haystack normalization (finding F) + reset flag position (finding J)
+
+> **LANDING ORDER — READ BEFORE MERGING. Land finding D before or together with
+> this branch.**
+>
+> The normalized second pass re-runs every rule pattern. That is free against a
+> linear pattern and it is not free against finding D's unfixed `git-push-force`
+> pattern, `git\s+push\s+(?:[^|;&]*\s+)?(?:--force…)`, where `[^|;&]` is a
+> superset of `\s` and the quantifiers compete for one contiguous whitespace run.
+> A command padded with contiguous spaces is already superlinear on that pattern;
+> adding **one quoted token or one long flag** defeats the `normalized ===
+> haystack` skip, so that superlinear cost is paid **twice**.
+>
+> Measured against the 5000ms PreToolUse budget (two machines, agreeing):
+>
+> | padding | pure padding (pass 2 skipped) | + one quoted token (pass 2 runs) |
+> |---|---|---|
+> | 2000 sp | 1243–1275 ms | 2606–2658 ms |
+> | 2600 sp | 2749 ms | **5656 ms — over budget** |
+> | 3000 sp | 4220 ms | 9198 ms |
+>
+> Effect: the padding needed to blow the budget drops from **~3,200 to ~2,450
+> contiguous spaces, roughly a 23% discount on the C+D chain**, and a blown
+> budget is finding C's fail-open (hook killed, nothing emitted, call proceeds
+> ungated). Pure padding is unaffected — pass 2 is skipped, 2792 ms vs 2749 ms —
+> so the discount requires the extra token.
+>
+> This is a **composition hazard with a sibling branch, not a defect in F+J**.
+> With D's linear pattern landed, two passes of a linear match is still linear
+> and the effect vanishes completely. Landing F+J alone is a knowingly-accepted
+> discount, not a surprise. The hazard is pinned in
+> `test/compass-normalization.js` → `CHARACTERIZATION: LANDING ORDER`, which
+> detects whether D has landed and reports it on every run.
+
+### Fixed
+- **Quoted and long-form flag spellings are no longer a bypass** (finding F).
+  `lib/compass.js` matches the command **as written** first and normalizes only
+  when that pass comes back clean. That ordering is the whole safety argument:
+  normalization can only ADD a denial and can never change WHICH rule fires on a
+  command that already denied.
+- **`git reset --hard` is caught wherever the flag sits** (finding J). The rule
+  walked from the subcommand straight to the flag; it now walks intervening
+  tokens, so `git reset HEAD~1 --hard` is gated like `git reset --hard HEAD~1`.
+
+### Added
+- **`test/compass-normalization.js` + `test/fixtures/compass-normalization-specimens.json`**
+  — the bypass specimens, a 40-command prose corpus that must not move, a
+  monotonicity property over the whole corpus, and the cost characterizations.
+
+### Known limitation (recorded, not fixed)
+- **A trailing shell comment is read as argument text.** `git reset HEAD~1 #
+  avoid --hard` and `git reset --soft HEAD~1 # not --hard` move OPEN → WITNESS in
+  all three modes. It fails in the SAFE direction, and the legacy string layer
+  already cannot tell an invocation from an echo of one.
+  The one-character remedy — excluding `#` from the token class — is **worse and
+  must not be taken**: git refs and paths may contain `#` mid-token, and it flips
+  `git reset refs/heads/topic#1 --hard`, `git reset feature#42 --hard` and
+  `git reset HEAD~1 -- a#b.txt --hard` from WITNESS to OPEN. Two fail-safe
+  denials traded for three fail-open passes on commands that actually discard
+  work. Both halves are pinned in the `comment_boundary` fixture group; the
+  real-catch half is the guard that goes red if someone reaches for it.
+
+### Known-open bypasses (out of scope for this branch, not introduced by it)
+Verdicts below were measured on this branch (bundled rules only,
+`T2HELIX_POLICY_DIR=''`), not carried over from prose. **`shadow` is the shipped
+default**, so an OPEN there is an ungated command.
+
+| command | legacy | shadow | enforce |
+|---|---|---|---|
+| `rm --recursive=yes /tmp/*` | OPEN | OPEN | WITNESS |
+| `rm --recursive=yes --force /tmp/*` | OPEN | OPEN | WITNESS |
+| `rm --force=1 /tmp/*` | OPEN | OPEN | PAUSE |
+| `rm \-rf /tmp/*` | OPEN | OPEN | PAUSE |
+| `rm $'-rf' /tmp/*` | OPEN | OPEN | WITNESS |
+
+- The `--flag=value` long-form is in scope for finding F's class and is **not
+  closed**: the rewrite's `(?![\w-])` lookahead permits `--recursive=yes` →
+  `-r=yes`, which then fails the rule's `-[rRf]+\s+` because of the `=`. Closing
+  it means stripping an `=value` suffix before mapping — a pattern edit, and this
+  codebase has reverted two of those, so it deserves its own adversarial pass
+  rather than being tacked on here.
+- The backslash-escape and ANSI-C spellings are pre-existing and were never
+  claimed. F closes the quoted and long-form subset, not the whole bypass class.
+- A repo-policy rule with a `condition` and no `pattern` fires on the first pass
+  and starves the normalized pass. Not a regression (the same command returned
+  the same verdict before normalization existed); pinned as a CHARACTERIZATION.
+
 ## [0.12.0] — Compass V2: Action IR, semantic Guard, safe-repeat leases
 
 Turns the compass from raw-string gating into an action-aware Guard layer while

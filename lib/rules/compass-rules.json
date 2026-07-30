@@ -26,7 +26,7 @@
       "id": "git-reset-hard",
       "classification": "WITNESS",
       "tool": "Bash",
-      "pattern": "git\\s+reset\\s+--hard\\b",
+      "pattern": "git\\s+reset\\s+(?:(?!git\\s+reset\\s)[^|;&\\s]+[ \\t]+)*--hard\\b",
       "reason": "git reset --hard discards uncommitted work. Confirm there is nothing worth keeping in the working tree."
     },
     {

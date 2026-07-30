@@ -253,24 +253,21 @@ test('bounded rewrites that retain the WITNESS floor', () => {
 // are closed, so each now asserts the FIXED behaviour: a documented WITNESS form
 // must deny in EVERY mode, not only in the mode that happens to parse it.
 
-test('STILL OPEN: long and quoted rm flags are allowed in the default mode', () => {
-  // NOT FIXED — and the attempt is instructive. Widening rm-rf-wildcard's flag
-  // class closed this, but rm-rf-wildcard is rule #1 in a FIRST-MATCH-WINS list
-  // (lib/compass.js), so the wider pattern began capturing ordinary deletes and
-  // RELABELLING chained commands with a migrated rule_id. mergeDecisions then
-  // cleared the whole verdict on migrated-family grounds, turning
-  // `rm --force <file> && git push --force` from DENY into ALLOW in enforce —
-  // four non-rm WITNESS families lost their gate. The same edit also made
-  // git-reset-hard cubic on whitespace runs. Both reverted 2026-07-26.
-  // A correct fix must not widen rule #1. See open thread #15.
-  assert.deepStrictEqual(
-    modeMatrix('rm --recursive --force /tmp/*'),
-    { legacy: 'OPEN', shadow: 'OPEN', enforce: 'WITNESS' }
-  );
-  assert.deepStrictEqual(
-    modeMatrix('rm "-rf" /tmp/*'),
-    { legacy: 'OPEN', shadow: 'OPEN', enforce: 'WITNESS' }
-  );
+test('regression: long and quoted rm flags deny in every mode', () => {
+  // Was OPEN/OPEN/WITNESS — only the mode that parsed the command caught it.
+  // Fixed by normalizing the HAYSTACK rather than widening rule #1. Widening was
+  // tried and reverted 2026-07-26: rm-rf-wildcard is rule #1 in a
+  // FIRST-MATCH-WINS list (lib/compass.js), so a wider pattern began capturing
+  // ordinary deletes and RELABELLING chained commands with a migrated rule_id;
+  // mergeDecisions then cleared the whole verdict on migrated-family grounds and
+  // `rm --force <file> && git push --force` went from DENY to ALLOW in enforce.
+  // Normalization reaches the same matches from a different site, so it inherits
+  // the same hazard — classify() therefore matches the command AS WRITTEN first
+  // and only normalizes when that pass is clean. Guarded in
+  // test/compass-normalization.js under rule_order_preserved.
+  const ALL_WITNESS = { legacy: 'WITNESS', shadow: 'WITNESS', enforce: 'WITNESS' };
+  assert.deepStrictEqual(modeMatrix('rm --recursive --force /tmp/*'), ALL_WITNESS);
+  assert.deepStrictEqual(modeMatrix('rm "-rf" /tmp/*'), ALL_WITNESS);
 });
 
 test('regression: an unknown tool carrying a shell command is no longer ungated', async () => {
@@ -313,19 +310,25 @@ test('regression: enforce mode no longer downgrades prefixed deletes', () => {
   }
 });
 
-test('STILL OPEN: quoted and reordered git safety flags evade every mode', () => {
-  // NOT FIXED. Re-anchoring git-reset-hard with the same `(?:[^|;&]*\s+)?` idiom
-  // git-push-force already uses made the pattern CUBIC on whitespace runs
-  // (0.019ms -> 1347ms at 1.2KB), because [^|;&] is a superset of \s and three
-  // quantifiers then compete for one contiguous run. The PreToolUse budget is
-  // 5000ms and Bash is the only tool whose haystack is uncapped, so a hung hook
-  // emits no decision and the call proceeds UNGATED. Reverted 2026-07-26.
-  const ALL_OPEN = { legacy: 'OPEN', shadow: 'OPEN', enforce: 'OPEN' };
-  assert.deepStrictEqual(modeMatrix('git push "--force" origin main'), ALL_OPEN);
-  assert.deepStrictEqual(modeMatrix('git reset "--hard" HEAD~1'), ALL_OPEN);
+test('regression: quoted and reordered git safety flags deny in every mode', () => {
+  // Was OPEN in all three modes. The quoted forms are closed by the dequote in
+  // classify(); the flag-last form needed the rule re-anchored.
+  //
+  // Re-anchoring was the part that had failed before: the earlier attempt reused
+  // the `(?:[^|;&]*\s+)?` idiom git-push-force already carries, which is CUBIC on
+  // whitespace runs (0.019ms -> 1347ms at 1.2KB) because [^|;&] is a superset of
+  // \s and three quantifiers then compete for one contiguous run. Against a
+  // 5000ms PreToolUse budget a hung hook emits no decision and the call proceeds
+  // UNGATED. The token-then-separator form `(?:[^|;&\s]+[ \t]+)*` is unambiguous
+  // — nothing can claim the same run twice — and stays flat: 0ms at 8000 spaces,
+  // asserted in test/compass-normalization.js. [ \t] rather than \s so the walk
+  // cannot cross a newline into the next command.
+  const ALL_WITNESS = { legacy: 'WITNESS', shadow: 'WITNESS', enforce: 'WITNESS' };
+  assert.deepStrictEqual(modeMatrix('git push "--force" origin main'), ALL_WITNESS);
+  assert.deepStrictEqual(modeMatrix('git reset "--hard" HEAD~1'), ALL_WITNESS);
   // The worst of the set: ordinary, unquoted, valid git that a developer types by
-  // habit. git-reset-hard requires the flag ADJACENT to the subcommand.
-  assert.deepStrictEqual(modeMatrix('git reset HEAD~1 --hard'), ALL_OPEN);
+  // habit. git-reset-hard used to require the flag ADJACENT to the subcommand.
+  assert.deepStrictEqual(modeMatrix('git reset HEAD~1 --hard'), ALL_WITNESS);
 });
 
 test('FIXED: git-push-force is linear on whitespace runs', () => {
@@ -365,6 +368,9 @@ test('regression: widened rm patterns stay linear-time (no catastrophic backtrac
   // for one round. The shape that actually explodes is a long run of a single
   // character that MULTIPLE quantifiers can all claim — here whitespace, because
   // `[^|;&]` is a superset of `\s`. Whitespace runs must stay in this list.
+  // The reset shape is no longer skipped: git-reset-hard now walks tokens with
+  // `(?:[^|;&\s]+[ \t]+)*`, where the separator cannot be claimed by the token
+  // class, so it is measured here rather than exempted.
   const RM = String.fromCharCode(114, 109);
   const adversarial = [
     'git reset ' + ' '.repeat(4000) + 'x',            // the shape that was missed
@@ -414,7 +420,7 @@ test('regression: quoting a dangerous command as prose is still OPEN', () => {
   assert.strictEqual(modeMatrix(prose).enforce, 'OPEN', prose);
 });
 
-test('actual seats reproduce long-flag mode split', async () => {
+test('regression: every seat agrees on long-flag deletes', async () => {
   const command = 'rm --recursive --force /tmp/*';
   const payload = structured(command);
   assert.deepStrictEqual(
@@ -428,16 +434,17 @@ test('actual seats reproduce long-flag mode split', async () => {
       mcp_enforce: mcpVerdict('dry_run_compass', { command, mode: 'enforce' })
     },
     {
-      // STILL the pre-fix picture: the long-flag rule widening was reverted after
-      // adversarial review showed it retired four non-rm WITNESS families via
-      // first-match-wins relabelling. Shadow is the shipped default, so this row
-      // of OPENs is what runs today.
-      pre_shadow: 'OPEN',
+      // Was four OPENs against three WITNESSes: only the modes that parsed the
+      // command caught it, and shadow — the shipped default — was on the OPEN
+      // side. Normalizing the haystack in the legacy classifier closes the split
+      // at its source, so every seat that reads the rules now reads them the same
+      // way, whatever mode it runs in.
+      pre_shadow: 'WITNESS',
       pre_enforce: 'WITNESS',
-      grok_legacy: 'OPEN',
-      codex_shadow: 'OPEN',
+      grok_legacy: 'WITNESS',
+      codex_shadow: 'WITNESS',
       codex_enforce: 'WITNESS',
-      mcp_shadow: 'OPEN',
+      mcp_shadow: 'WITNESS',
       mcp_enforce: 'WITNESS'
     }
   );
