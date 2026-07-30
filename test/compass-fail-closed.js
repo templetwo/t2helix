@@ -15,6 +15,15 @@
 // decision, the wall clock, and the audit row. The pattern-level tests assert the
 // timing property rather than the pattern text, because the property is what the
 // fix has to keep.
+//
+// VACUOUS-PASS DISCLOSURE (round 1 disclosed one of these; the review found two).
+// Against unpatched fe8aa0c, TWO of the four passing tests proved nothing about
+// the change: (1) the exhaustive equivalence walk compared the old literal against
+// the loaded rule, which on unpatched IS that literal, so it matched itself; and
+// (2) "the escape hatch governs non-evaluation only — it cannot open a WITNESS"
+// passed because unpatched has no hatch and a WITNESS denies regardless. Both are
+// meaningful only after the change. Round 2 fixes (1) by putting `git`/`push` into
+// the fuzz alphabet, which is the construct the new pattern turns on.
 
 const fs = require('fs');
 const os = require('os');
@@ -27,6 +36,7 @@ process.env.T2HELIX_DATA_DIR = tmpDir;
 
 const ch = require('../lib/chronicle');
 const compass = require('../lib/compass');
+const { classifyV2 } = require('../lib/compass-v2');
 
 // The hook budget declared in hooks/hooks.json — the number the exploit targets.
 const HOOK_BUDGET_MS = JSON.parse(
@@ -166,10 +176,16 @@ test('the git-push-force replacement denies everything the shipped pattern denie
   // an equivalence claim vacuous, so enumerate the token grammar exhaustively
   // instead and report the hit count next to the divergences — a run with zero
   // both-hits proves nothing and has to be visible as such.
+  //
+  // `git` and `push` are IN the alphabet deliberately: the round-2 pattern differs
+  // from round 1 only by refusing to scan across an interior `git push`, so an
+  // alphabet without those tokens cannot tell the two apart and this assertion
+  // would be vacuous a second time. With them, the walk exercises exactly the
+  // construct that made the pattern linear.
   const OLD = /git\s+push\s+(?:[^|;&]*\s+)?(?:--force(?!-with-lease)|-f)\b/;
   const NEW = compass.loadRules().find(r => r.id === 'git-push-force')._regex;
   const TOK = ['--force', '-f', '--force-with-lease', '--forced', '-force', '"--force"',
-    'origin', 'main', '-u', '|', ';', '&', '', 'x'];
+    'origin', 'main', '-u', '|', ';', '&', '', 'x', 'git', 'push'];
   const WS = [' ', '  ', '\t', '\n'];
   let checked = 0, both = 0, lost = 0, widened = 0;
   const lostSamples = [], widenedSamples = [];
@@ -190,6 +206,232 @@ test('the git-push-force replacement denies everything the shipped pattern denie
   assert.ok(both > 1000, `fuzz produced only ${both} matches — it is not exercising the pattern`);
   assert.strictEqual(lost, 0, `replacement LOST denials: ${lostSamples.join(' ')}`);
   assert.strictEqual(widened, 0, `replacement gained denials: ${widenedSamples.join(' ')}`);
+});
+
+// ── CLASS GUARD: length must not buy a non-decision, for ANY rule ────────────
+//
+// Round 1 pinned the INSTANCE, not the class: every adversarial input above is a
+// contiguous whitespace run of the one exploit's exact shape, so the suite could
+// not see either bypass the adversarial review then landed — a repeated-token pad
+// against a rule whose pattern restarts on every occurrence (198KB), and an
+// unbroken-token pad routed through classifySemantic, which the per-rule timing
+// arm structurally CANNOT reach because it calls rule._regex.test directly.
+//
+// The guard below is written against the rule SET and the whole gate:
+//   • a seed per rule id, with an assertion that every loaded rule has one, so a
+//     new rule cannot be added without adversarial coverage;
+//   • four pad shapes (whitespace run, repeated trigger, unbroken token, chained
+//     repeated trigger + another rule's destructive tail);
+//   • growth, not a wall clock — doubling the pad may not multiply the cost, so
+//     the assertion means the same thing on slower hardware;
+//   • one arm through classifyV2, which is the only way the semantic leg is
+//     inside the test at all.
+
+const ADVERSARIAL_SEEDS = {
+  'rm-rf-wildcard':     { trigger: 'rm -rf ', tail: '/tmp/junk*' },
+  'rm-rf-root':         { trigger: 'rm -rf ', tail: '/' },
+  'git-push-force':     { trigger: 'git push ', tail: '--force' },
+  'git-reset-hard':     { trigger: 'git reset ', tail: '--hard' },
+  'drop-table-or-db':   { trigger: 'drop table ', tail: 'users' },
+  'deploy-prod':        { trigger: 'kubectl apply ', tail: '--namespace prod' },
+  'no-verify':          { trigger: 'git commit ', tail: '--no-verify' },
+  'credential-paste':   { trigger: 'password=', tail: 'hunter2hunter2' },
+  'grok-direct-mutate': { trigger: 'raw-mutate ', tail: 'raw-mutate' },
+  // Not bundled — this repo's own .t2helix/policy.json. Seeded anyway: repo-local
+  // rules compile operator regexes with no linearity check, so they are exactly
+  // the population the guard should cover.
+  't2helix-protect-chronicle-db': { trigger: 'rm x ', tail: 'chronicle.db' }
+};
+
+// NAMED, UNCLOSED RESIDUALS — do not delete entries to make the suite green.
+//
+// Measured at a 200,000-char pad, every other rule is 0-1ms on all four shapes;
+// these two are 3,500-4,100ms, so the signal is a 3,000x separation, not a
+// judgement call. Both are quadratic in the number of TRIGGER words in a segment.
+//
+//  • deploy-prod — each of kubectl|terraform|helm|aws|gcloud re-runs two
+//    segment-wide lookarounds. PRE-EXISTING and measured IDENTICAL on fe8aa0c and
+//    on this branch (`kubectl apply ` repeated: decision at 191KB, killed at
+//    219KB, on both trees, 3 runs each). NOT fixed here because the tempered
+//    rewrite that made git-push-force and no-verify linear does not transfer:
+//    those may restart at a later trigger without loss, whereas deploy-prod's
+//    read-only carve-out can block an EARLIER trigger that a later one does not,
+//    so bounding its scans would change which commands match. Rewriting a WITNESS
+//    rule's carve-outs on a timing argument alone needs its own equivalence proof.
+//  • t2helix-protect-chronicle-db — this repo's own .t2helix/policy.json, pattern
+//    `rm\s+.*chronicle\.db`. Left AS IS deliberately: it is the concrete instance
+//    of the population the classify/gate budgets exist for — operator regexes that
+//    lib/compass has never seen and cannot linearity-check.
+//
+// The list is an UPPER BOUND. A new superlinear rule fails the test; fixing one of
+// these also fails it (remove the entry) rather than passing silently.
+const KNOWN_SUPERLINEAR = ['deploy-prod', 't2helix-protect-chronicle-db'];
+
+// Where a single rule's regex sits when it is linear, versus when it is not.
+const RULE_COST_PAD = 200000;
+const RULE_COST_CEILING_MS = 250;
+
+// Every pad is built so the rule does NOT match — a matching rule returns on the
+// first hit and is therefore never the stall vector. The cost being measured is
+// the cost of FAILING to match, which is what the exploit buys.
+function padShapes({ trigger }, n) {
+  return {
+    'whitespace-run': trigger + ' '.repeat(n) + 'q',
+    'repeated-trigger': trigger.repeat(Math.max(1, Math.floor(n / trigger.length))) + 'q',
+    'unbroken-token': trigger + 'a'.repeat(n),
+    'chained-trigger': trigger.repeat(Math.max(1, Math.floor(n / trigger.length))) + ' ' + HARD_RESET
+  };
+}
+
+test('every bundled rule has adversarial coverage — a new rule cannot slip in untested', () => {
+  const missing = compass.loadRules()
+    .filter(r => r._regex && !ADVERSARIAL_SEEDS[r.id])
+    .map(r => r.id);
+  assert.deepStrictEqual(missing, [],
+    `rules with no entry in ADVERSARIAL_SEEDS: ${missing.join(', ')} — add a trigger/tail seed`);
+});
+
+test('no rule can burn the hook budget on any pad shape, except the named residuals', () => {
+  // Cost of FAILING to match at attack scale, per rule, per shape. A matching rule
+  // returns on the first hit and is never the stall vector, so every pad here is
+  // built not to match. Threshold is 250ms against a measured 0-1ms for the linear
+  // rules — a 250x margin, so this does not become a hardware-speed assertion.
+  const detail = [];
+  const offenders = new Set();
+  for (const rule of compass.loadRules()) {
+    if (!rule._regex || !ADVERSARIAL_SEEDS[rule.id]) continue;
+    const shapes = padShapes(ADVERSARIAL_SEEDS[rule.id], RULE_COST_PAD);
+    for (const [shape, s] of Object.entries(shapes)) {
+      const t = Date.now();
+      rule._regex.test(s);
+      const ms = Date.now() - t;
+      if (ms > RULE_COST_CEILING_MS) {
+        offenders.add(rule.id);
+        detail.push(`${rule.id}/${shape}: ${ms}ms on ${s.length}b`);
+      }
+    }
+  }
+  const found = [...offenders].sort();
+  const unexpected = found.filter(id => !KNOWN_SUPERLINEAR.includes(id));
+  // Scoped to LOADED rules: the repo-policy entry is absent whenever
+  // T2HELIX_POLICY_DIR is blanked (which the suite runner does), and "not loaded"
+  // is not "fixed".
+  const loaded = new Set(compass.loadRules().map(r => r.id));
+  const fixed = KNOWN_SUPERLINEAR.filter(id => loaded.has(id) && !found.includes(id));
+  console.log(`        [note] over ${RULE_COST_CEILING_MS}ms at ${RULE_COST_PAD}b: ${found.join(', ') || 'none'}`);
+  assert.deepStrictEqual(unexpected, [],
+    `NEW superlinear rules (not in KNOWN_SUPERLINEAR): ${detail.join(' | ')}`);
+  assert.deepStrictEqual(fixed, [],
+    `these are no longer superlinear — remove them from KNOWN_SUPERLINEAR: ${fixed.join(', ')}`);
+});
+
+test('the WHOLE gate (both legs) stays in budget on every pad shape', () => {
+  // classifyV2, not rule._regex — classifySemantic is the leg that dominated cost
+  // and that the round-1 timing test could not see. 100KB is past every size the
+  // review landed a bypass at (80KB semantic pad, 198KB repeated prefix scaled).
+  const N = 100000;
+  const slow = [];
+  let worst = 0, worstLabel = '';
+  // 3,000ms against the 5,000ms hook budget. The ceiling is uniform rather than
+  // per-seed because classifyV2 runs the WHOLE rule set on every input: the two
+  // KNOWN_SUPERLINEAR rules are paid by every pad here, whichever rule the pad was
+  // built for, so a tighter per-seed ceiling would only measure them anyway.
+  const ceiling = 3000;
+  for (const id of Object.keys(ADVERSARIAL_SEEDS)) {
+    const shapes = padShapes(ADVERSARIAL_SEEDS[id], N);
+    for (const [shape, command] of Object.entries(shapes)) {
+      const t = Date.now();
+      const v2 = classifyV2({ tool_name: 'Bash', tool_input: { command } }, {});
+      const ms = Date.now() - t;
+      assert.ok(v2 && v2.active && v2.active.classification, `${id}/${shape} produced no verdict`);
+      if (ms > worst) { worst = ms; worstLabel = `${id}/${shape}`; }
+      if (ms > ceiling) slow.push(`${id}/${shape} ${ms}ms > ${ceiling}ms (${command.length}b)`);
+    }
+  }
+  console.log(`        [note] slowest 100KB pad through both legs: ${worstLabel} ${worst}ms`);
+  assert.deepStrictEqual(slow, [], `gate over budget: ${slow.join(' | ')}`);
+});
+
+test('a padded destructive command reaches a DECISION at every size, not a timeout', () => {
+  // The end-to-end property both landed bypasses violated: the hook must emit a
+  // verdict inside the harness budget however long the command is. Sizes span the
+  // two exploits (80KB semantic pad, 198KB repeated prefix) and 4x past the point
+  // fe8aa0c itself went ungated on the repeated-prefix shape (352KB).
+  const bad = [];
+  const cases = [
+    ['semantic-leg pad 80KB', HARD_RESET + '; echo ' + 'a'.repeat(80000)],
+    ['semantic-leg pad 200KB', HARD_RESET + '; echo ' + 'a'.repeat(200000)],
+    ['repeated git-push 198KB', 'git push '.repeat(22000) + ' ' + HARD_RESET],
+    ['repeated git-push 432KB', 'git push '.repeat(48000) + ' ' + HARD_RESET],
+    ['repeated git-push 198KB + drop table', 'git push '.repeat(22000) + ' ' + DROP_TABLE]
+  ];
+  for (const [label, command] of cases) {
+    const r = runGate(bash('cls-' + label.replace(/\W+/g, '-'), command));
+    if (r.killed) bad.push(`${label}: hook killed at ${HOOK_BUDGET_MS}ms, emitted nothing (UNGATED)`);
+    else if (r.cleared) bad.push(`${label}: cleared`);
+    else if (r.decision !== 'deny') bad.push(`${label}: decision=${r.decision}`);
+  }
+  assert.deepStrictEqual(bad, [], bad.join(' | '));
+});
+
+test('the semantic leg is skipped only where it provably cannot change the verdict', () => {
+  // The skip is the load-bearing half of the 80KB fix, so assert the CONDITION,
+  // not just the timing: a WITNESS is skippable only above the size gate; PAUSE
+  // and OPEN are never skipped at any size, because for those the semantic leg
+  // can ESCALATE and dropping an escalation would be a fail-open.
+  const big = 'a'.repeat(20000);
+  const witnessBig = classifyV2({ tool_name: 'Bash', tool_input: { command: HARD_RESET + '; echo ' + big } }, {});
+  assert.strictEqual(witnessBig.legacy.classification, 'WITNESS');
+  assert.ok(/^legacy-witness-oversize/.test(String(witnessBig.shadow.semantic_skipped)),
+    `oversize WITNESS should skip the semantic leg, got ${witnessBig.shadow.semantic_skipped}`);
+  assert.strictEqual(witnessBig.active.classification, 'WITNESS', 'skipping must not soften the verdict');
+
+  const witnessSmall = classifyV2({ tool_name: 'Bash', tool_input: { command: HARD_RESET } }, {});
+  assert.strictEqual(witnessSmall.shadow.semantic_skipped, null,
+    'an ordinary WITNESS still runs the leg — the shadow window must not go dark');
+  // The leg RAN, which is the property under test. git-reset-hard is a
+  // non-migrated rule, so the semantic verdict is legitimately OPEN and
+  // shadow.agree is legitimately false — what must not happen is a null verdict.
+  assert.notStrictEqual(witnessSmall.shadow.semantic_classification, null,
+    'the shadow row must carry a real semantic verdict, not a hole');
+  assert.strictEqual(witnessSmall.active.classification, 'WITNESS');
+
+  const pauseBig = classifyV2({ tool_name: 'Bash', tool_input: { command: 'echo api_key=abcdefghij ' + big } }, {});
+  assert.strictEqual(pauseBig.legacy.classification, 'PAUSE');
+  assert.strictEqual(pauseBig.shadow.semantic_skipped, null,
+    'PAUSE must never be skipped — the semantic leg can escalate it');
+
+  const openBig = classifyV2({ tool_name: 'Bash', tool_input: { command: 'echo ' + big } }, {});
+  assert.strictEqual(openBig.legacy.classification, 'OPEN');
+  assert.strictEqual(openBig.shadow.semantic_skipped, null,
+    'OPEN must never be skipped — the semantic leg can escalate it');
+});
+
+test('a legacy NOT_EVALUATED cannot be cleared or softened by the semantic leg', () => {
+  // The one merge site round 1 asserted rather than read. Measured then: enforce +
+  // semantic documentation_only returned active OPEN with false_positive_cleared:
+  // 'classify-budget-exceeded' — a non-evaluation recorded as a cleared false
+  // positive, the exact audit defect NOT_EVALUATED exists to close. A semantic
+  // PAUSE is equally disallowed: PAUSE mints an override token and the
+  // non-evaluation floor deliberately mints none.
+  const { mergeDecisions } = require('../lib/compass-semantic');
+  const ne = { classification: 'NOT_EVALUATED', rule_id: 'classify-budget-exceeded', reason: 'starved' };
+  const semantics = {
+    documentation_only: { classification: 'OPEN', rule_id: null, documentation_only: true },
+    open: { classification: 'OPEN', rule_id: null },
+    pause: { classification: 'PAUSE', rule_id: 'credential-paste' },
+    witness: { classification: 'WITNESS', rule_id: 'rm-rf-root' },
+    skipped: null
+  };
+  const wrong = [];
+  for (const mode of ['shadow', 'enforce']) {
+    for (const [label, sem] of Object.entries(semantics)) {
+      const m = mergeDecisions(ne, sem, mode, { normalized_action_hash: 'h' });
+      if (m.active.classification !== 'NOT_EVALUATED') wrong.push(`${mode}/${label} -> ${m.active.classification}`);
+      if (m.active.false_positive_cleared) wrong.push(`${mode}/${label} recorded false_positive_cleared`);
+    }
+  }
+  assert.deepStrictEqual(wrong, [], wrong.join(' | '));
 });
 
 // ── The floor: an internal failure is not a clearance ───────────────────────

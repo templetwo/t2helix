@@ -86,6 +86,15 @@ slow pattern cannot starve the rules after it.
 | `T2HELIX_GATE_BUDGET_MS` | `3500` | Above this, the hook will not return a clearance it spent too long producing. |
 | `T2HELIX_CLASSIFY_BUDGET_MS` | `1200` | Wall clock for the whole rule loop. |
 | `T2HELIX_RULE_BUDGET_MS` | `400` | A rule slower than this is named in the row's evidence. |
+| `T2HELIX_SEMANTIC_SKIP_BYTES` | `4096` | Above this size, an action the legacy rules already classified WITNESS skips the semantic leg. WITNESS is the top of the lattice, so that leg could only clear it — skipping fails closed. PAUSE and OPEN are never skipped at any size, because for those the semantic leg can escalate. |
+| `T2HELIX_SEMANTIC_BUDGET_MS` | `1200` | If the legacy leg already spent this long, the semantic leg is not entered and the legacy verdict stands. |
+
+A budget cannot interrupt a regex already running, so the second half of the defence is
+that the patterns themselves are linear. `git-push-force` and `no-verify` are written so
+they cannot restart on every occurrence of their own trigger, and `lib/secrets.js` anchors
+the URL-scheme alternative so it cannot rescan a long unbroken token from every offset.
+Two rules remain quadratic in trigger count and are named in `test/compass-fail-closed.js`
+(`KNOWN_SUPERLINEAR`) rather than left implicit.
 
 ## Where state lives
 

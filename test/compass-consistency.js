@@ -370,16 +370,18 @@ test('regression: widened rm patterns stay linear-time (no catastrophic backtrac
     modeMatrix(input);
     const ms = Date.now() - started;
     timings.push(`${input.length}b:${ms}ms`);
-    if (ms > 1500) slow.push(`${input.slice(0, 12)}… ${input.length}b:${ms}ms`);
+    if (ms > 500) slow.push(`${input.slice(0, 12)}… ${input.length}b:${ms}ms`);
   }
-  // 1500ms, not zero: `rm -` + 16,000 r's costs ~870ms through the full matrix and
-  // did so before this fix too. That cost is in the credential detector's
-  // `[a-z][a-z0-9+.-]*://`, which rescans a long unbroken run from every start
-  // position — quadratic, not the ambiguity class fixed here, and it lives in the
-  // one file whose patterns cannot be edited without re-proving the
-  // detector-implies-redactor invariant. Left as a separate finding.
+  // 500ms — RESTORED 2026-07-30, and the restoration is the point. The previous
+  // round had to relax this to 1500ms because `rm -` + 16,000 r's cost ~870ms
+  // through the full matrix (and did so before that fix too). The cause was named
+  // there and is now fixed at the source: the credential detector's url-auth
+  // alternative `[a-z][a-z0-9+.-]*://` rescanned a long unbroken run from every
+  // start position, and lib/secrets.js now anchors it with `(?<![a-z])`. Same
+  // shape now costs ~30ms. If this ceiling has to be loosened again, the honest
+  // move is to name the new cause here rather than raise the number.
   console.log(`        [note] adversarial shapes — ${timings.join(' ')}`);
-  assert.deepStrictEqual(slow, [], `shapes exceeded 1500ms: ${slow.join(', ')}`);
+  assert.deepStrictEqual(slow, [], `shapes exceeded 500ms: ${slow.join(', ')}`);
 });
 
 test('regression: quoting a dangerous command as prose is still OPEN', () => {

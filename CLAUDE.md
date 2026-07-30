@@ -164,6 +164,29 @@ these paths only — it never touches a real WITNESS or PAUSE — and the row is
 so the hatch cannot hide a gap. It exists because a gate that denies everything and cannot
 be switched off from outside the session is a brick, not a safeguard.
 
+**The budget is a backstop, not the defence — CORRECTED 2026-07-30.** An earlier version
+of this section claimed the pattern rewrite handled a slow bundled rule and the budget
+handled the rest. An adversarial review falsified that twice. A budget is checked *between*
+rules and cannot preempt a regex already entered, so a single slow pattern still burns the
+whole 5s timeout; and the budget covered `classify()` only, while `classifyV2` then ran
+`classifySemantic` unbudgeted — which is where the time actually went (1ms legacy vs
+9,647ms semantic on a 100KB pad). Both are now closed at the source rather than by the
+budget:
+
+- **Patterns are linear.** `git-push-force` and `no-verify` refuse to scan across a later
+  occurrence of their own trigger, so they cannot restart at every one (both proved
+  equivalent to the shipped patterns by exhaustive enumeration, not by argument), and
+  `lib/secrets.js` anchors its URL-scheme alternative so it cannot rescan an unbroken token
+  from every offset. `deploy-prod` and repo-policy rules stay quadratic in trigger count and
+  are named in `test/compass-fail-closed.js` as `KNOWN_SUPERLINEAR`, with the reason the
+  same rewrite does not transfer to them.
+- **The semantic leg is skipped when it provably cannot move the verdict** — see
+  `semanticSkipReason` in `lib/compass-v2.js`. `parseToIR` is kept unconditionally; it is
+  linear and it carries the hash the token flow keys on.
+- **`NOT_EVALUATED` is absorbing in `mergeDecisions`.** It may not be cleared (enforce mode
+  was measured turning a non-evaluation into `OPEN` with `false_positive_cleared`) and may
+  not be softened to `PAUSE`, which would hand back the override token the floor withholds.
+
 `stderr` is used to make *dropped writes visible* without breaking flow (e.g. a dropped
 `recordCompassFire` would otherwise leave a misleading half-chain). Keep that pattern:
 fail open on the control path, but log the drop.
