@@ -58,6 +58,38 @@ Action Intermediate Representation sits between hook input and policy:
 - **Safe-repeat leases** bind to `normalized_action_hash` + `parser_version` + `cwd`, are session-scoped and use-bounded, and never cover WITNESS.
 - Replay historical fires: `npm run replay-compass -- --limit 50`
 
+## Compass rules gate a CAPABILITY, not a tool name
+
+A rule's `tool` field names the surface it guards. `tool: "Bash"` means **shell
+execution**, not "the tool literally named Bash": any tool whose input carries a
+non-empty `command` or `script` string is evaluated against the same WITNESS
+floor. A tool that runs a shell under a different name (`mcp__shell__run`,
+`Terminal`, …) is no longer ungated.
+
+| field | meaning |
+|---|---|
+| `tool: "Bash"` | guards shell execution wherever it happens |
+| `tool: "X"` (anything else) | exact tool scoping, matched against the tool's input envelope |
+| `tool_exact: true` | opts a shell rule back out — Bash and nothing else |
+| `capability: "shell"` | opt-in: match this rule against shell payloads too |
+
+Which string a rule is matched against is decided **per rule**: a rule that names
+the tool (or is unscoped) sees the action string; a rule reached by the shell
+capability sees every `command`/`script` value; a rule reached both ways sees
+both. Every command-shaped field is evaluated, so a benign `command` cannot hide
+a destructive `script`.
+
+Cost, stated rather than claimed to be zero: prose sitting in a `command` or
+`script` field can match a rule and hard-deny (`WITNESS`, no override token).
+Measured specimens and the operator levers are in `COMPASS_CONSISTENCY.md`. The
+only lever over the bundled floor itself is `T2HELIX_DATA_DIR/compass/rules.json`,
+which replaces it wholesale — a repo `.t2helix/policy.json` is additive and can
+never override a bundled rule ID.
+
+`compass_log` records `ruleset_hash`, `ruleset_source` and `rules_eligible` for
+every verdict; `rules_eligible: 0` means no rule could evaluate the call, which
+is distinct from evaluated-and-cleared.
+
 ## PAUSE override flow
 
 Under `defaultMode: bypassPermissions` (the typical Claude Code config), `permissionDecision: ask` is silently overridden by the harness. To preserve a real safety surface for PAUSE-classified actions, T2Helix routes PAUSE through `deny` with a token-based override:

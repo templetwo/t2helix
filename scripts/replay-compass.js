@@ -29,17 +29,44 @@ const ch = require('../lib/chronicle');
 const { classifyV2 } = require('../lib/compass-v2');
 const { ALL_MIGRATED_RULE_IDS } = require('../lib/compass-semantic');
 
+// Rebuild a tool call from its action_summary. Two failure modes are now named
+// rather than guessed around, because both made this instrument report the
+// OPPOSITE of the truth about the rows it was pointed at:
+//
+//   1. For an unrecognized tool, summarizeAction's `rest` is the JSON ENVELOPE
+//      (`{"command":"…"}`), not a bare string. Reconstructing it as {raw: rest}
+//      put the payload in a field no rule can be matched against, so every
+//      capability-gated deny replayed as OPEN and was reported as a softening.
+//   2. summarizeAction truncates at 200 chars with a trailing '…'. A truncated
+//      summary cannot be faithfully replayed AT ALL — the trigger may be in the
+//      part that was cut — and replaying it anyway manufactures a false
+//      softening (or hides a real weakening) with no signal. Those rows are now
+//      counted as `unreplayable` and excluded from every other count.
+const TRUNCATION_MARK = '…';
+
 function parseToolFromSummary(summary) {
   // summarizeAction format: "Tool: rest"
-  const m = String(summary || '').match(/^([A-Za-z]+):\s*(.*)$/s);
+  const m = String(summary || '').match(/^([A-Za-z_][A-Za-z0-9_]*):\s*(.*)$/s);
   if (!m) return { tool_name: 'Bash', tool_input: { command: String(summary || '') } };
   const tool_name = m[1];
   const rest = m[2];
-  if (tool_name === 'Bash') return { tool_name, tool_input: { command: rest.replace(/…$/, '') } };
-  if (tool_name === 'Edit' || tool_name === 'Write' || tool_name === 'MultiEdit') {
-    return { tool_name, tool_input: { file_path: rest.replace(/…$/, '') } };
+  if (rest.endsWith(TRUNCATION_MARK)) {
+    return { tool_name, tool_input: null, unreplayable: 'summary-truncated' };
   }
-  return { tool_name, tool_input: { raw: rest } };
+  if (tool_name === 'Bash') return { tool_name, tool_input: { command: rest } };
+  if (tool_name === 'Edit' || tool_name === 'Write' || tool_name === 'MultiEdit') {
+    return { tool_name, tool_input: { file_path: rest } };
+  }
+  // Unrecognized tool: the summary holds the JSON envelope actionString built.
+  try {
+    const parsed = JSON.parse(rest);
+    if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
+      return { tool_name, tool_input: parsed };
+    }
+  } catch {
+    // fall through — a summary that is not an envelope cannot be reconstructed
+  }
+  return { tool_name, tool_input: null, unreplayable: 'envelope-unparseable' };
 }
 
 function severity(c) {
@@ -64,6 +91,8 @@ function main() {
 
   const report = {
     replayed: 0,
+    unreplayable: 0,
+    unreplayable_rows: [],
     agree_legacy: 0,
     agree_semantic: 0,
     diffs: [],
@@ -73,9 +102,24 @@ function main() {
 
   // Replay oldest-first for readability
   for (const row of rows.slice().reverse()) {
-    const { tool_name, tool_input } = row.tool_name
-      ? { tool_name: row.tool_name, tool_input: parseToolFromSummary(row.action_summary).tool_input }
-      : parseToolFromSummary(row.action_summary);
+    const parsed = parseToolFromSummary(row.action_summary);
+    const { tool_name, tool_input } = parsed;
+
+    // A row whose call cannot be reconstructed is NOT evidence of agreement,
+    // softening or weakening. Counting it as any of those is how a drift
+    // instrument lies about the drift it exists to measure.
+    if (parsed.unreplayable || !tool_input) {
+      report.unreplayable++;
+      if (report.unreplayable_rows.length < 20) {
+        report.unreplayable_rows.push({
+          id: row.id,
+          reason: parsed.unreplayable || 'no-tool-input',
+          original: { classification: row.classification, rule: row.rule_matched },
+          summary: row.action_summary
+        });
+      }
+      continue;
+    }
 
     // Prefer stored tool_name
     const tn = row.tool_name || tool_name;
@@ -134,6 +178,7 @@ function main() {
     process.stdout.write(JSON.stringify(report, null, 2) + '\n');
   } else {
     console.log(`replay-compass: ${report.replayed} rows`);
+    console.log(`  unreplayable:   ${report.unreplayable}  (summary truncated or not an envelope — NOT counted as agreement or drift)`);
     console.log(`  agree_legacy:   ${report.agree_legacy}`);
     console.log(`  agree_semantic: ${report.agree_semantic}`);
     console.log(`  diffs:          ${report.diffs.length}`);

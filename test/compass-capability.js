@@ -36,6 +36,8 @@ function test(name, fn) {
 const RM = 'r' + 'm';
 const FORCE = '--for' + 'ce';
 const DROP = 'DR' + 'OP TABLE';
+const DESTRUCTIVE = `${RM} -` + `rf /`;
+const WILDCARD = `${RM} -` + `rf /` + '*';
 
 // Every entry is one payload under two tool names. The gate must reach the same
 // verdict for both — the tool's NAME is not what makes a shell command dangerous.
@@ -101,30 +103,75 @@ test('haystack is the payload field, not the JSON envelope', () => {
   assert.strictEqual(miss.classification, 'OPEN', 'a key name must not be matched as a shell payload');
 });
 
-test('false positives: benign non-shell command payloads do not move', () => {
-  const benign = [
-    'refresh',
-    'play',
-    '/deploy staging',
-    'build --watch',
-    'SELECT * FROM users WHERE id = 1',
-    'npm test',
-    'ls -la',
-    'git status',
-    'git push origin main',
-    'echo hello',
-    'open the door',
-    'restart the production dashboard',
-    'kubectl get pods -n production',
-    'terraform plan -var env=production'
-  ];
-  const moved = [];
-  for (const b of benign) {
-    const asBash = compass.classify({ tool_name: 'Bash', tool_input: { command: b } });
-    const asOther = compass.classify({ tool_name: 'mcp__app__cmd', tool_input: { command: b } });
-    if (asOther.classification !== asBash.classification) moved.push([b, asBash.classification, asOther.classification]);
+// GUARD B, REBUILT (round 2). The round-1 version was a Bash-vs-non-Bash PARITY
+// test: it flagged a specimen only when the non-Bash verdict DIFFERED from the
+// Bash verdict. Prose containing a destructive fragment is WITNESS under Bash
+// too, so "it did not move" was true and the specimen was invisible BY
+// CONSTRUCTION — which is how the round-1 report came to claim "benign non-shell
+// strings matching any rule at all: 0" while three prose payloads hard-denied.
+// The corpus is now asserted ABSOLUTELY (OPEN, full stop), under both tool names
+// and both payload fields, and it carries prose as well as command-shaped
+// strings. A widening of eligibility that denies any of these now fails here
+// instead of being cancelled out by Bash denying it too.
+const BENIGN_CORPUS = [
+  // command-shaped, benign
+  'refresh',
+  'play',
+  '/deploy staging',
+  'build --watch',
+  'SELECT * FROM users WHERE id = 1',
+  'npm test',
+  'ls -la',
+  'git status',
+  'git push origin main',
+  'echo hello',
+  'kubectl get pods -n production',
+  'terraform plan -var env=production',
+  // prose — the class the parity test could not see
+  'open the door',
+  'restart the production dashboard',
+  'Remember to review the deployment plan for production before Friday',
+  'the release notes mention a database migration',
+  'Please summarize the incident report',
+  'delete the stale branch after review'
+];
+
+test('false positives: the benign corpus is absolutely OPEN, not merely Bash-identical', () => {
+  const gated = [];
+  for (const b of BENIGN_CORPUS) {
+    for (const probe of [
+      { tool_name: 'Bash', tool_input: { command: b } },
+      { tool_name: 'mcp__app__cmd', tool_input: { command: b } },
+      { tool_name: 'mcp__app__cmd', tool_input: { script: b } },
+      { tool_name: 'Notes', tool_input: { script: b, title: 'note' } }
+    ]) {
+      const r = compass.classify(probe);
+      if (r.classification !== 'OPEN') {
+        gated.push([probe.tool_name, Object.keys(probe.tool_input)[0], b, r.classification, r.rule_id]);
+      }
+    }
   }
-  assert.deepStrictEqual(moved, [], `payloads classified differently than under Bash: ${JSON.stringify(moved)}`);
+  assert.deepStrictEqual(gated, [], `benign payloads gated: ${JSON.stringify(gated)}`);
+});
+
+test('known false positives: prose in a shell field hard-denies, and that is the accepted trade', () => {
+  // MEASURED, NOT ASSUMED. These three specimens are the reviewer's, verbatim.
+  // They deny — WITNESS, no override token — because a `command`/`script` field
+  // is matched as a shell payload without knowing whether the tool executes it.
+  // Accepting them is a deliberate call (a safety floor fails closed), and the
+  // escape routes are documented in COMPASS_CONSISTENCY.md. This test exists so
+  // the cost is RECORDED rather than claimed to be zero: if someone narrows
+  // eligibility later, this test fails and the doc gets updated with it.
+  const KNOWN_FP = [
+    { tool: 'Note', field: 'script', text: `Remember: never run ${WILDCARD} on prod`, rule: 'rm-rf-wildcard' },
+    { tool: 'Docs', field: 'command', text: `The ${DROP} statement removes a table`, rule: 'drop-table-or-db' },
+    { tool: 'SqlDocs', field: 'script', text: `How to ${DROP} safely`, rule: 'drop-table-or-db' }
+  ];
+  const observed = KNOWN_FP.map(c => {
+    const r = compass.classify({ tool_name: c.tool, tool_input: { [c.field]: c.text } });
+    return `${c.tool}/${c.field} -> ${r.classification}/${r.rule_id}`;
+  });
+  assert.deepStrictEqual(observed, KNOWN_FP.map(c => `${c.tool}/${c.field} -> WITNESS/${c.rule}`));
 });
 
 test('non-shell tools keep their existing scoping (no widening)', () => {
@@ -168,11 +215,157 @@ test('tool_exact opts a rule out of capability widening', () => {
   }
 });
 
-test('Grok keeps its tool-scoped rule and gains shell capability via command', () => {
-  const g = compass.classify({ tool_name: 'Grok', tool_input: { action: 'override-compass' } });
-  assert.strictEqual(g.rule_id, 'grok-direct-mutate', 'Grok-scoped rule regressed');
-  const gs = compass.classify({ tool_name: 'Grok', tool_input: { command: `${RM} -rf /` } });
+// GUARD A, REBUILT (round 2). The round-1 version exercised the tool-scoped
+// trigger and the shell field in SEPARATE payloads and never in the same one —
+// so a test named "Grok-scoped rule regressed" passed while the Grok-scoped rule
+// was regressed by a call-wide haystack substitution. Every case below is the
+// COMBINATION: a tool-scoped trigger that lives in the JSON envelope, plus a
+// benign shell-shaped field that used to replace the envelope for the whole call.
+const TOOL_SCOPED_WITH_DECOY = [
+  { label: 'no shell field (control)', input: { op: 'raw-mutate' } },
+  { label: 'benign command alongside', input: { op: 'raw-mutate', command: 'ls' } },
+  { label: 'benign script alongside', input: { op: 'raw-mutate', script: 'ls' } },
+  { label: 'override-compass + command', input: { op: 'override-compass', command: 'ls' } },
+  { label: 'bypass-chronicle + command', input: { op: 'bypass-chronicle', command: 'echo ok' } },
+  { label: 'force-apply + command + script', input: { op: 'force-apply', command: 'ls', script: 'pwd' } }
+];
+for (const c of TOOL_SCOPED_WITH_DECOY) {
+  test(`guard: a Grok-scoped rule survives a shell field in the SAME payload — ${c.label}`, () => {
+    const r = compass.classify({ tool_name: 'Grok', tool_input: c.input });
+    assert.strictEqual(
+      r.rule_id, 'grok-direct-mutate',
+      `tool-scoped rule went blind to its own envelope: got ${r.classification}/${r.rule_id}`
+    );
+    assert.strictEqual(r.classification, 'WITNESS');
+  });
+}
+
+test('Grok still gains shell capability on top of its tool-scoped rule', () => {
+  const gs = compass.classify({ tool_name: 'Grok', tool_input: { command: DESTRUCTIVE } });
   assert.strictEqual(gs.classification, 'WITNESS');
+  assert.strictEqual(gs.rule_id, 'rm-rf-wildcard');
+});
+
+// GENERALIZATION of guard A. grok-direct-mutate is the only non-Bash-scoped rule
+// that SHIPS, but third-party repo policies carrying tool:"X" are the population
+// this fix exists to serve, so the invariant is asserted on an operator-authored
+// rule too — that is the case a future ruleset change cannot accidentally drop.
+test('guard: a repo-policy rule scoped to a NON-Bash tool still fires when a shell field is present', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 't2helix-mcpscope-'));
+  fs.mkdirSync(path.join(dir, '.t2helix'));
+  fs.writeFileSync(path.join(dir, '.t2helix', 'policy.json'), JSON.stringify({
+    rules: [{ id: 'mcp-envelope-rule', classification: 'WITNESS', tool: 'mcp__thing__do', pattern: 'ZZ_ENVELOPE_ZZ', reason: 'r' }]
+  }));
+  const prev = process.env.T2HELIX_POLICY_DIR;
+  process.env.T2HELIX_POLICY_DIR = dir;
+  compass._resetCache();
+  try {
+    const bare = compass.classify({ tool_name: 'mcp__thing__do', tool_input: { op: 'ZZ_ENVELOPE_ZZ' } });
+    assert.strictEqual(bare.rule_id, 'mcp-envelope-rule', 'fixture never fired at all');
+    const withDecoy = compass.classify({ tool_name: 'mcp__thing__do', tool_input: { op: 'ZZ_ENVELOPE_ZZ', command: 'ls' } });
+    assert.strictEqual(
+      withDecoy.rule_id, 'mcp-envelope-rule',
+      `adding a benign command field cleared a tool-scoped repo rule: got ${withDecoy.classification}/${withDecoy.rule_id}`
+    );
+    // and the same rule must NOT reach across to a different tool
+    assert.strictEqual(compass.classify({ tool_name: 'mcp__other', tool_input: { op: 'ZZ_ENVELOPE_ZZ' } }).classification, 'OPEN');
+  } finally {
+    process.env.T2HELIX_POLICY_DIR = prev;
+    compass._resetCache();
+  }
+});
+
+// ITEM 2. detectCapability() returned on the FIRST non-empty allowlisted field,
+// so a benign value in `command` hid a destructive `script` for the whole call.
+const DECOY_CASES = [
+  { label: 'benign command hides destructive script', tool: 'mcp__shell__run', input: { command: 'echo hi', script: DESTRUCTIVE }, field: 'script' },
+  { label: 'benign script hides destructive command', tool: 'Terminal', input: { script: 'echo hi', command: DESTRUCTIVE }, field: 'command' },
+  { label: 'whitespace command hides destructive script', tool: 'mcp__exec__sh', input: { command: '   ', script: DESTRUCTIVE }, field: 'script' },
+  { label: 'both fields destructive', tool: 'mcp__shell__run', input: { command: DESTRUCTIVE, script: DESTRUCTIVE }, field: 'command' }
+];
+for (const c of DECOY_CASES) {
+  test(`guard: every shell-shaped field is evaluated, not just the first — ${c.label}`, () => {
+    const r = compass.classify({ tool_name: c.tool, tool_input: c.input });
+    assert.strictEqual(r.classification, 'WITNESS', `decoy field shadowed the real payload: got ${r.classification}/${r.rule_id}`);
+    assert.strictEqual(r.rule_id, 'rm-rf-wildcard');
+    assert.strictEqual(r.matched_field, c.field, 'the row must name the field that actually matched');
+  });
+}
+
+test('detectCapability reports every non-empty shell field, in allowlist order', () => {
+  const d = compass.detectCapability({ tool_name: 'X', tool_input: { command: 'a', script: 'b' } });
+  assert.deepStrictEqual(d.fields, ['command', 'script']);
+  assert.deepStrictEqual(d.payloads, ['a', 'b']);
+  const one = compass.detectCapability({ tool_name: 'X', tool_input: { command: '  ', script: 'b' } });
+  assert.deepStrictEqual(one.fields, ['script'], 'a whitespace-only field must not count as a payload');
+  assert.deepStrictEqual(one.payloads, ['b']);
+  const none = compass.detectCapability({ tool_name: 'X', tool_input: { note: 'b' } });
+  assert.deepStrictEqual(none.fields, []);
+  assert.deepStrictEqual(none.payloads, []);
+});
+
+test('eligibility and classify share ONE match-kind computation', () => {
+  // rules_eligible is a LOGGED audit value. If eligibility() and classify()
+  // decided applicability independently they could drift, and the row would then
+  // assert "N rules were eligible and cleared" about a set classify() never
+  // evaluated — the same fail-open shape, dressed as provenance.
+  const rules = compass.loadRules();
+  const probes = [
+    { tool_name: 'Bash', tool_input: { command: 'ls' } },
+    { tool_name: 'mcp__shell__run', tool_input: { command: 'ls' } },
+    { tool_name: 'Grok', tool_input: { op: 'raw-mutate', command: 'ls' } },
+    { tool_name: 'Grok', tool_input: { op: 'noop' } },
+    { tool_name: 'Read', tool_input: { file_path: '/a' } }
+  ];
+  for (const p of probes) {
+    const cap = compass.detectCapability(p);
+    const viaKind = rules.filter(r => compass.ruleMatchKind(r, p.tool_name, cap.capability).applies).length;
+    const viaBool = rules.filter(r => compass.ruleAppliesTo(r, p.tool_name, cap.capability)).length;
+    assert.strictEqual(compass.eligibility(p).rules_eligible, viaKind, `eligibility drifted from ruleMatchKind for ${p.tool_name}`);
+    assert.strictEqual(viaBool, viaKind, `ruleAppliesTo drifted from ruleMatchKind for ${p.tool_name}`);
+  }
+});
+
+test('no rule regex carries a stateful flag (g/y), so multi-target testing is order-independent', () => {
+  // A rule is now tested against more than one string per call. A `g` or `y`
+  // regex carries lastIndex between .test() calls, which would make the verdict
+  // depend on target order. classify() resets defensively; this asserts the
+  // stronger property at the source.
+  const stateful = compass.loadRules()
+    .filter(r => r._regex && (r._regex.global || r._regex.sticky))
+    .map(r => `${r.id}:${r._regex.flags}`);
+  assert.deepStrictEqual(stateful, []);
+});
+
+test('unscoped rules see BOTH the envelope and the shell payload', () => {
+  // Declared deviation from the reviewer's prescription (unscoped -> actionString
+  // only): an unscoped rule that could only see the envelope would go blind past
+  // actionString's 500-char cap on a long payload. The extra scan costs nothing
+  // on the shipped ruleset — asserted below — because no bundled or repo rule is
+  // unscoped; an operator-authored unscoped rule doubles its own scan on
+  // shell-capable calls, which is what the classify budget backstops.
+  assert.strictEqual(
+    compass.loadRules().filter(r => !r.tool && !r._capability).length, 0,
+    'the shipped ruleset gained an unscoped rule — the zero-cost claim above must be re-measured'
+  );
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 't2helix-unscoped-'));
+  fs.mkdirSync(path.join(dir, '.t2helix'));
+  fs.writeFileSync(path.join(dir, '.t2helix', 'policy.json'), JSON.stringify({
+    rules: [{ id: 'unscoped-probe', classification: 'WITNESS', pattern: 'ZZ_ANY_ZZ', reason: 'r' }]
+  }));
+  const prev = process.env.T2HELIX_POLICY_DIR;
+  process.env.T2HELIX_POLICY_DIR = dir;
+  compass._resetCache();
+  try {
+    assert.strictEqual(compass.classify({ tool_name: 'X', tool_input: { note: 'ZZ_ANY_ZZ' } }).rule_id, 'unscoped-probe', 'envelope target lost');
+    assert.strictEqual(compass.classify({ tool_name: 'X', tool_input: { command: 'ZZ_ANY_ZZ' } }).rule_id, 'unscoped-probe', 'payload target lost');
+    // past actionString's 500-char envelope cap — visible only via the payload target
+    const long = 'echo ' + 'a'.repeat(700) + ' ZZ_ANY_ZZ';
+    assert.strictEqual(compass.classify({ tool_name: 'X', tool_input: { command: long } }).rule_id, 'unscoped-probe', 'unscoped rule blind past the envelope cap');
+  } finally {
+    process.env.T2HELIX_POLICY_DIR = prev;
+    compass._resetCache();
+  }
 });
 
 test('eligibility: shell-capable tools have eligible rules, inert tools have none', () => {
@@ -395,6 +588,67 @@ test('PreToolUse writes provenance on every compass_log path', () => {
   const gated = rows.find(r => r.tool_name === 'mcp__shell__run');
   assert.strictEqual(gated.classification, 'WITNESS', 'the hook did not gate the non-Bash shell tool');
   assert.strictEqual(rows.find(r => r.tool_name === 'mcp__notes__read').rules_eligible, 0);
+});
+
+// END-TO-END. A library-level verdict is not the gate; the hook is. Both round-2
+// bypasses are re-run through the REAL PreToolUse hook in all three Compass V2
+// modes, because a fix that only holds in shadow mode is an illusion.
+test('end-to-end: both round-2 bypasses deny through the real hook in off, shadow AND enforce', () => {
+  const { execFileSync } = require('child_process');
+  const hook = path.join(__dirname, '..', 'hooks', 'pre-tool-use.js');
+  const cases = [
+    { label: 'Grok tool-scoped trigger + benign command decoy', tool_name: 'Grok', tool_input: { op: 'raw-mutate', command: 'ls' } },
+    { label: 'decoy field shadowing (benign command, destructive script)', tool_name: 'mcp__shell__run', tool_input: { command: 'echo hi', script: DESTRUCTIVE } }
+  ];
+  const failures = [];
+  for (const mode of ['off', 'shadow', 'enforce']) {
+    for (const c of cases) {
+      const dir = fs.mkdtempSync(path.join(os.tmpdir(), 't2helix-e2e-'));
+      const out = execFileSync(process.execPath, [hook], {
+        input: JSON.stringify({ session_id: 'e2e-round2', tool_name: c.tool_name, tool_input: c.tool_input }),
+        env: {
+          ...process.env,
+          T2HELIX_DATA_DIR: dir,
+          T2HELIX_POLICY_DIR: path.join(__dirname, '..'),
+          T2HELIX_COMPASS_V2: mode
+        },
+        encoding: 'utf8'
+      });
+      if (!out.includes('"permissionDecision":"deny"')) failures.push(`${mode} / ${c.label} -> ${out.trim() || '{}'}`);
+    }
+  }
+  assert.deepStrictEqual(failures, [], `the hook cleared a bypass:\n  ${failures.join('\n  ')}`);
+});
+
+// FINDING 4 of the review: the drift instrument the operator reads to decide
+// whether enforce mode is safe could not reconstruct the very rows this fix
+// adds, so every capability-gated deny replayed as OPEN and was reported as a
+// softening. A fail-open in the instrument that measures fail-opens.
+test('replay-compass reconstructs a non-Bash shell row instead of replaying it as OPEN', () => {
+  const { execFileSync } = require('child_process');
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 't2helix-replay-'));
+  const seed = `
+    process.env.T2HELIX_DATA_DIR = ${JSON.stringify(dir)};
+    const ch = require(${JSON.stringify(path.join(__dirname, '..', 'lib', 'chronicle'))});
+    const compass = require(${JSON.stringify(path.join(__dirname, '..', 'lib', 'compass'))});
+    const call = { tool_name: 'mcp__shell__run', tool_input: { command: ${JSON.stringify(DESTRUCTIVE)} } };
+    ch.logCompass({ session_id: 'replay-seed', tool_name: call.tool_name,
+      action_summary: compass.summarizeAction(call), classification: 'WITNESS',
+      rule_matched: 'rm-rf-wildcard', reason: 'r' });
+    ch.logCompass({ session_id: 'replay-seed', tool_name: 'mcp__shell__run',
+      action_summary: 'mcp__shell__run: ' + '{"command":"' + 'x'.repeat(400) + '…',
+      classification: 'WITNESS', rule_matched: 'rm-rf-wildcard', reason: 'r' });
+  `;
+  execFileSync(process.execPath, ['-e', seed], { encoding: 'utf8' });
+  const out = execFileSync(process.execPath, [
+    path.join(__dirname, '..', 'scripts', 'replay-compass.js'), '--json', '--data-dir', dir
+  ], { encoding: 'utf8', env: { ...process.env, T2HELIX_POLICY_DIR: path.join(__dirname, '..') } });
+  const report = JSON.parse(out);
+  assert.strictEqual(report.replayed, 1, 'the truncated row must not be counted as replayed');
+  assert.strictEqual(report.unreplayable, 1, 'a truncated summary cannot be faithfully replayed and must say so');
+  assert.deepStrictEqual(report.weakenings, [], `capability row replayed as a weakening: ${JSON.stringify(report.weakenings)}`);
+  assert.deepStrictEqual(report.migrated_softenings, [], `capability row replayed as a softening: ${JSON.stringify(report.migrated_softenings)}`);
+  assert.strictEqual(report.agree_legacy, 1, 'the reconstructed row did not re-derive its own verdict');
 });
 
 console.log(`\n${passed} passed, ${failed} failed`);
