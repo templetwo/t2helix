@@ -18,7 +18,7 @@
     "integration": "node test/integration.js",
     "test:action-ir": "node test/action-ir.js",
     "test:compass-v2": "node test/compass-v2.js",
-    "test": "node test/smoke.js && node test/regression.js && node test/integration.js && node test/sse-contract.js && node test/import-atlas.js && node test/atlas-acceptance.js && node test/sync-stack.js && node test/action-ir.js && node test/compass-v2.js && node test/codex-adapter.js && node test/grok-adapter.js && node test/compass-consistency.js && node test/compass-fail-closed.js",
+    "test": "node test/smoke.js && node test/regression.js && node test/integration.js && node test/sse-contract.js && node test/import-atlas.js && node test/atlas-acceptance.js && node test/sync-stack.js && node test/action-ir.js && node test/compass-v2.js && node test/codex-adapter.js && node test/grok-adapter.js && node test/compass-consistency.js && node test/compass-fail-closed.js && node test/compass-capability.js",
     "replay-compass": "node scripts/replay-compass.js",
     "sse-contract": "node test/sse-contract.js",
     "test:import-atlas": "node test/import-atlas.js",
@@ -43,6 +43,7 @@
     "codex:boot": "T2HELIX_DATA_DIR=\"$HOME/.claude/plugins/data/t2helix-templetwo-t2helix\" node -e 'const c=require(\"./lib/codex-adapter\"); c.codexBoot({query:process.argv.slice(1).join(\" \")||\"current context\"}).then(r=>console.dir(r,{depth:2})).catch(e=>{console.error(e);process.exitCode=1})'",
     "codex:test": "node test/codex-adapter.js",
     "full-sync": "T2HELIX_DATA_DIR=\"$HOME/.claude/plugins/data/t2helix-templetwo-t2helix\" npm run grok:init && echo 'Grok + Claude now share chronicle (same SQLite, same MCP surface)'",
-    "grok:test-compass": "node test/grok-adapter.js"
+    "grok:test-compass": "node test/grok-adapter.js",
+    "test:capability": "node test/compass-capability.js"
   }
 }

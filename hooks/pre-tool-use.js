@@ -43,7 +43,16 @@ const FAILURE_MODE_OPEN =
 // the padded-command bypass works by making evaluation not happen, so a token on
 // this path would let an attacker pad, collect, approve and retry — the same
 // bypass in two steps. Like WITNESS, a non-evaluation has nothing to override.
-function emitNotEvaluated({ session_id, tool_name, action_summary, rule_id, detail, evidence }) {
+//
+// `provenance` is spread in for the same reason it is spread onto every other
+// compass_log write in this file: a NULL ruleset_hash is DEFINED as "the row
+// predates the column", so omitting it here would file the rows that mean "never
+// evaluated" as the least reconstructable rows in the log. The three call sites
+// that fire before a tool_input exists (unparseable payload, no tool_name, an
+// unhandled throw out of main) legitimately pass nothing — rules_eligible cannot
+// be computed against a call that was never read — and those rows carry NULL
+// honestly.
+function emitNotEvaluated({ session_id, tool_name, action_summary, rule_id, detail, evidence, provenance }) {
   try {
     logCompass({
       session_id: session_id || null,
@@ -54,7 +63,8 @@ function emitNotEvaluated({ session_id, tool_name, action_summary, rule_id, deta
       reason: detail,
       user_override: FAILURE_MODE_OPEN ? 'gate-failure-mode:open' : null,
       evidence_json: evidence || null,
-      message_version: MESSAGE_VERSION
+      message_version: MESSAGE_VERSION,
+      ...(provenance || {})
     });
   } catch (e) {
     process.stderr.write(`[t2helix] NOT_EVALUATED row dropped: ${e.message}\n`);
@@ -122,6 +132,25 @@ async function main() {
     if (e && e.code === 'T2HELIX_DRIVER_UNAVAILABLE') emitDegradedWarning();
   }
 
+  // Ruleset provenance, resolved once and stamped on EVERY compass_log write
+  // below — the lease and override paths included, or those rows stay as
+  // ambiguous as the ones this is here to fix. The ruleset varies with
+  // T2HELIX_DATA_DIR and with the repo's .t2helix/policy.json, so a verdict
+  // recorded without it cannot be reconstructed later even in principle.
+  let provenance = {};
+  try {
+    const p = legacyCompass.rulesetProvenance();
+    provenance = {
+      ruleset_hash: p.ruleset_hash,
+      ruleset_source: p.ruleset_source,
+      ruleset_manifest: p.manifest,
+      rule_count: p.rule_count,
+      rules_eligible: legacyCompass.eligibility({ tool_name, tool_input }).rules_eligible
+    };
+  } catch (e) {
+    process.stderr.write(`[t2helix] ruleset provenance unavailable: ${e.message}\n`);
+  }
+
   let v2;
   try {
     v2 = classifyV2({ tool_name, tool_input }, { has_goal, cwd: process.cwd() });
@@ -147,7 +176,8 @@ async function main() {
         session_id,
         tool_name,
         rule_id: 'gate-classifier-failed',
-        detail: `Both the V2 orchestrator and the legacy classifier threw (${e2.message}).`
+        detail: `Both the V2 orchestrator and the legacy classifier threw (${e2.message}).`,
+        provenance
       });
       return;
     }
@@ -164,7 +194,8 @@ async function main() {
       action_summary: v2.action_summary,
       rule_id: result.rule_id,
       detail: result.reason,
-      evidence: result.evidence
+      evidence: result.evidence,
+      provenance
     });
     return;
   }
@@ -180,7 +211,8 @@ async function main() {
       action_summary: v2.action_summary,
       rule_id: 'gate-budget-exceeded',
       detail: `Classification took ${gateElapsed}ms against a ${GATE_BUDGET_MS}ms budget, so the clearance is not trustworthy.`,
-      evidence: { elapsed_ms: gateElapsed, budget_ms: GATE_BUDGET_MS }
+      evidence: { elapsed_ms: gateElapsed, budget_ms: GATE_BUDGET_MS },
+      provenance
     });
     return;
   }
@@ -242,7 +274,8 @@ async function main() {
             normalized_action_hash: semanticHash,
             parser_version: parserVersion,
             message_version: MESSAGE_VERSION,
-            shadow_json: v2.shadow
+            shadow_json: v2.shadow,
+            ...provenance
           });
         } catch (_) {}
         process.stdout.write(JSON.stringify({}));
@@ -263,7 +296,8 @@ async function main() {
       evidence_json: result.evidence || null,
       parser_version: parserVersion,
       message_version: MESSAGE_VERSION,
-      shadow_json: v2.shadow
+      shadow_json: v2.shadow,
+      ...provenance
     });
   } catch (e) {
     process.stderr.write(`[t2helix] logCompass dropped: ${e.message}\n`);
@@ -311,7 +345,8 @@ async function main() {
             normalized_action_hash: semanticHash,
             parser_version: parserVersion,
             message_version: MESSAGE_VERSION,
-            shadow_json: v2.shadow
+            shadow_json: v2.shadow,
+            ...provenance
           });
         } catch (_) {}
         process.stdout.write(JSON.stringify({}));

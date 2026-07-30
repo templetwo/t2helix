@@ -176,11 +176,6 @@ for (const specimen of CORPUS) {
 const destructive = 'rm -rf /tmp/*';
 const UNMATCHABLE = [
   {
-    id: 'unknown-tool',
-    payload: { tool_name: 'Mystery', tool_input: { command: destructive } },
-    expected: ['OPEN', 'OPEN', 'OPEN', 'OPEN', 'OPEN', 'OPEN']
-  },
-  {
     id: 'missing-tool-input',
     payload: { tool_name: 'Bash' },
     expected: ['OPEN', 'OPEN', 'OPEN', 'OPEN', 'OPEN', 'OPEN']
@@ -275,6 +270,32 @@ test('STILL OPEN: long and quoted rm flags are allowed in the default mode', () 
   assert.deepStrictEqual(
     modeMatrix('rm "-rf" /tmp/*'),
     { legacy: 'OPEN', shadow: 'OPEN', enforce: 'WITNESS' }
+  );
+});
+
+test('regression: an unknown tool carrying a shell command is no longer ungated', async () => {
+  // Was OPEN on all six seats, filed under UNMATCHABLE. Every rule declared
+  // tool:"Bash" and classify() skipped any rule whose tool did not equal the
+  // tool name, so a tool that ran a shell under any other name was never
+  // evaluated — and logged OPEN, indistinguishable from evaluated-and-cleared.
+  // Rules now bind to the shell CAPABILITY, so the tool's name stops deciding
+  // whether the floor applies.
+  const payload = { tool_name: 'Mystery', tool_input: { command: destructive } };
+  assert.deepStrictEqual(
+    [
+      preToolVerdict(payload, 'shadow'),
+      preToolVerdict(payload, 'off'),
+      (await grok.grokWitness(payload, { session_id: 'unknown-tool-grok' })).classification,
+      withMode('shadow', () => codex.codexCompassCheck(payload).classification),
+      mcpVerdict('dry_run_compass', payload),
+      mcpVerdict('explain_compass', payload)
+    ],
+    ['WITNESS', 'WITNESS', 'WITNESS', 'WITNESS', 'WITNESS', 'WITNESS']
+  );
+  // The name is not what makes it dangerous: same payload, same verdict as Bash.
+  assert.strictEqual(
+    compass.classify(payload).rule_id,
+    compass.classify(structured(destructive)).rule_id
   );
 });
 
@@ -506,12 +527,14 @@ for (const [id, command] of IDENTITY_CASES) {
   console.log(`\n${passed} passed, ${failed} failed`);
   if (failed === 0) {
     console.log('NOTE: the rm-flag, prefix-downgrade and git-flag divergences are FIXED and now');
-    console.log('      asserted as regressions above. So are (b) and (c) as of 0.12.1: a malformed');
-    console.log('      payload and an object-valued command now deny as NOT_EVALUATED and write a');
-    console.log('      compass_log row, and the cubic git-push-force idiom is gone. Still');
-    console.log('      UNRESOLVED by decision, not oversight: (a) non-Bash tools that shell out are');
-    console.log('      ungated — every destructive rule is tool-scoped to Bash; (d) the credential');
-    console.log('      detector is quadratic on a long unbroken alphanumeric run (~740ms at 40KB).');
+    console.log('      asserted as regressions above. So are (a), (b) and (c) as of 0.13.0:');
+    console.log('      (a) rules bind to the shell CAPABILITY, not a tool name, so any tool');
+    console.log('      carrying a command/script string meets the same floor; (b) a malformed');
+    console.log('      payload and (c) an object-valued command now deny as NOT_EVALUATED and');
+    console.log('      write a compass_log row; the cubic git-push-force idiom is gone. Still');
+    console.log('      UNRESOLVED by decision, not oversight: (d) the credential detector is');
+    console.log('      quadratic on a long unbroken alphanumeric run (~740ms at 40KB) — the');
+    console.log('      rule budget now bounds its effect on a verdict but not its cost.');
     console.log('      See COMPASS_CONSISTENCY.md and open thread #15.');
   }
   process.exit(failed ? 1 : 0);

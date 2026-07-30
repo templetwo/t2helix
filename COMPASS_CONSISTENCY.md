@@ -47,7 +47,7 @@ The command embedded in these specimens was `rm -rf /tmp/*` wherever a command-s
 
 | Payload shape | Claude V2 hook | Claude hook, V2 off | Grok | Codex | MCP dry-run / explain |
 |---|---:|---:|---:|---:|---:|
-| unknown `tool_name` | `OPEN` allow | `OPEN` allow | `OPEN` | `OPEN` | `OPEN` |
+| unknown `tool_name` — **superseded, see below** | `OPEN` allow | `OPEN` allow | `OPEN` | `OPEN` | `OPEN` |
 | missing `tool_input` | `OPEN` allow | `OPEN` allow | `OPEN` | `OPEN` | `OPEN` |
 | alternate key `{cmd: ...}` | `OPEN` allow | `OPEN` allow | `OPEN` | `OPEN` | `OPEN` |
 | nested `{request:{command:...}}` | `OPEN` allow | `OPEN` allow | `OPEN` | `OPEN` | `OPEN` |
@@ -57,6 +57,8 @@ The command embedded in these specimens was `rm -rf /tmp/*` wherever a command-s
 | object-valued `command` | error message + allow | error message + allow | `OPEN` | `UNAVAILABLE` | JSON-RPC error |
 
 The core cause is that `actionString()` uses an empty string when the Bash `command` field is absent, while rules are tool- and string-shape-specific. Unknown tools also cannot match Bash rules. No boundary distinguishes “parsed and safe enough to evaluate” from “no matchable action was supplied.”
+
+**Superseded for the unknown-`tool_name` row.** Rules no longer bind to a tool NAME alone. `tool: "Bash"` normalizes to the shell CAPABILITY, and any tool whose input carries a `command` or `script` string is evaluated against the same floor, so all six seats now return `WITNESS` for that specimen. The remaining rows stand: an alternate key (`cmd`), a nested command, an empty command, and a null payload are still not treated as actions. The boundary this finding asked for now exists in part — `compass_log.rules_eligible` records how many rules could evaluate the call, so `0` distinguishes “never evaluated” from “evaluated and cleared,” and `ruleset_hash` names the exact ruleset that produced the verdict. Deciding whether an unevaluatable payload should FAIL CLOSED remains the operator policy decision this audit named.
 
 The non-string case exposes a second inconsistency: the legacy regex test coerces the object, but `summarizeAction()` later calls `.slice()` and throws. The Claude hook catches that and emits only a `systemMessage`, which is not a deny. Grok swallows the exception and keeps its initialized `OPEN`; Codex correctly avoids calling it clearance by returning `UNAVAILABLE`; MCP surfaces the exception. PostToolUse also drops the action record after the same summary failure, so this input has neither a reliable verdict nor an `action:<hash>` outcome link.
 
@@ -128,6 +130,74 @@ For each specimen and each V2 mode (`off`, `shadow`, `enforce`), `classifyV2().a
 The existing Compass V2 test does compare `classifyV2().action_summary` to the same exported `summarizeAction()` function imported by PostToolUse, so it covers the central derivation by reference. It did not previously exercise the real PostToolUse process or the requested boundary cases; the new audit does both.
 
 Very long actions still share the same truncated legacy summary on both sides. That preserves Pre/Post pairing but can alias actions whose first 200 characters are identical; this audit records that distinction without treating it as a Pre/Post divergence.
+
+## Capability gating: what `tool:` now means, and what it costs
+
+`tool` on a rule no longer names a literal tool. It names the SURFACE the rule
+guards, and `tool: "Bash"` normalizes to the shell **capability**: any tool whose
+input carries a non-empty `command` or `script` STRING is evaluated against every
+shell rule, whatever the tool is called. A rule naming any other tool
+(`tool: "Grok"`) keeps exact scoping. This is a real behaviour change for
+existing repo policies and it is opt-OUT, which is the right default for a safety
+floor but must not be undocumented.
+
+Matching is chosen PER RULE, not per call:
+
+| how the rule reached the call | what it is matched against |
+|---|---|
+| names this tool exactly, or is unscoped | the action string (for an unknown tool, the JSON envelope) |
+| reached by the shell capability | every non-empty `command` / `script` value |
+| both | both, OR-ed, with identical strings scanned once |
+
+Two things this per-rule shape is protecting against, both measured:
+
+- Choosing one haystack for the whole call blinded every tool-scoped rule the
+  moment a `command` field was present — `Grok {op:"raw-mutate"}` is `WITNESS`,
+  and `Grok {op:"raw-mutate", command:"ls"}` became `OPEN`. Adding a benign field
+  turned a hard deny into a clearance.
+- Matching only the FIRST non-empty allowlisted field let a decoy hide the real
+  payload: `{command:"echo hi", script:"<destructive>"}` cleared.
+
+### Known false positives (accepted, not zero)
+
+A `command` or `script` field is matched as a shell command without knowing
+whether the tool executes it. Prose in such a field therefore hard-denies.
+Measured specimens, all `WITNESS` with no override token:
+
+| call | verdict |
+|---|---|
+| `Note {script: "Remember: never run rm -rf /* on prod"}` | `WITNESS` / `rm-rf-wildcard` |
+| `Docs {command: "The DROP TABLE statement removes a table"}` | `WITNESS` / `drop-table-or-db` |
+| `SqlDocs {script: "How to DROP TABLE safely"}` | `WITNESS` / `drop-table-or-db` |
+
+`isDocumentationOnly()` cannot rescue these the way it does for Bash, because the
+payload is not routed into the Action IR. They are asserted in
+`test/compass-capability.js` so the cost stays recorded rather than being claimed
+to be zero. The accepted trade is that a safety floor fails closed.
+
+### Operator levers, and the one that is NOT a lever
+
+- **`tool_exact: true`** opts a rule OUT of capability widening — it applies only
+  to rules the operator authors. A repo policy **cannot** override or narrow a
+  bundled rule ID (`mergeRepoPolicy` skips IDs already present), so `tool_exact`
+  is not a way to soften `rm-rf-wildcard` for a Notes tool.
+- **`capability: "shell"`** is the opt-IN counterpart: a rule scoped
+  `tool: "SomeMcpTool"` sees only the envelope, and this makes it match shell
+  payloads too.
+- **The only lever over the bundled floor** is `T2HELIX_DATA_DIR/compass/rules.json`,
+  which REPLACES the bundled set wholesale. It is blunt — it replaces the floor
+  rather than adjusting it — and that bluntness is deliberate.
+- Not a lever: editing `.t2helix/policy.json` to redefine a bundled rule ID.
+
+### Audit trail
+
+`compass_log` carries `ruleset_hash` / `ruleset_source` / `rules_eligible`, so a
+row says which ruleset produced the verdict and how many rules could evaluate the
+call at all — `0` means "never evaluated", which is what OPEN alone could not
+distinguish from "evaluated and cleared". `scripts/replay-compass.js` reconstructs
+a non-Bash shell row from its stored envelope; a row whose `action_summary` was
+truncated is counted as `unreplayable` rather than replayed, because replaying a
+truncated command manufactures a false softening.
 
 ## Changes and decisions left open
 

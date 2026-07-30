@@ -3,6 +3,42 @@
 All notable changes to t2helix are documented here. Format loosely follows
 [Keep a Changelog](https://keepachangelog.com/); versioning is [SemVer](https://semver.org/).
 
+## [Unreleased] — Compass gates a capability, not a tool name
+
+### Changed (BEHAVIOUR CHANGE for existing rules and repo policies)
+- **`tool: "Bash"` on a compass rule now means the shell CAPABILITY.** Any tool
+  whose input carries a non-empty `command` or `script` string is evaluated
+  against every shell rule, whatever the tool is called. Previously a tool that
+  ran a shell under any other name was completely ungated and its rows logged as
+  `OPEN`, indistinguishable from evaluated-and-cleared. Rules naming any other
+  tool keep exact scoping.
+- **`tool_exact: true`** (new) opts a shell rule back out — Bash and nothing else.
+  **`capability: "shell"`** (new) is the opt-in counterpart for a rule scoped to
+  some other tool name.
+- **The match haystack is chosen per RULE, not per call.** A rule that names the
+  tool, or is unscoped, is matched against the action string; a rule reached by
+  the shell capability is matched against the payload field values; a rule
+  reached both ways is matched against both, OR-ed, with identical strings
+  scanned once. Choosing one haystack for the whole call blinded every
+  tool-scoped rule whenever a `command` field was present.
+- **Every command-shaped field is evaluated, not the first.** A benign `command`
+  can no longer shadow a destructive `script` in the same payload.
+- Known cost, documented in `COMPASS_CONSISTENCY.md` and asserted in the test
+  suite: prose in a `command`/`script` field can match a rule and hard-deny.
+
+### Added
+- `compass_log.ruleset_hash` / `ruleset_source` / `rules_eligible`, and a
+  `compass_rulesets` table holding each distinct ruleset's manifest once.
+  `rules_eligible: 0` records "no rule could evaluate this call".
+- `test/compass-capability.js`, wired into `npm test` and `npm run test:capability`.
+
+### Fixed
+- `scripts/replay-compass.js` reconstructed any non-Bash tool call as
+  `{raw: …}`, so every capability-gated deny replayed as `OPEN` and was reported
+  as a softening. It now parses the stored envelope, and counts a row whose
+  summary was truncated as `unreplayable` instead of replaying it and
+  manufacturing a false softening.
+
 ## [0.12.0] — Compass V2: Action IR, semantic Guard, safe-repeat leases
 
 Turns the compass from raw-string gating into an action-aware Guard layer while

@@ -1,6 +1,6 @@
 {
   "version": "1.0",
-  "description": "Project-local policy extensions. Rules here are ADDITIVE — they extend the bundled rules and cannot remove or downgrade bundled WITNESS/PAUSE rules. Commit this file to git to make policy travel with the repo.",
+  "description": "Project-local policy extensions. Rules here are ADDITIVE — they extend the bundled rules and cannot remove, downgrade or redefine a bundled WITNESS/PAUSE rule (a rule whose id already exists is skipped). Commit this file to git to make policy travel with the repo. NOTE: `tool` names a CAPABILITY, not a literal tool — `tool: \"Bash\"` guards shell execution wherever it happens, so this rule also applies to any tool whose input carries a `command` or `script` string. Use `tool_exact: true` for Bash and nothing else, or `capability: \"shell\"` to opt a differently-scoped rule into shell-payload matching. See COMPASS_CONSISTENCY.md.",
   "rules": [
     {
       "id": "t2helix-protect-chronicle-db",
