@@ -27,6 +27,34 @@ All notable changes to t2helix are documented here. Format loosely follows
 - **`test/approval-provenance.js`** — the deny/message strings carry no token, the
   override loop still closes through `list_pending`, and every approval records
   where it came from.
+- **`MESSAGE_VERSION` bumped to `decision-message/0.12.1`** (`lib/decision-message.js`).
+  The message contract changed materially, and this identifier is what lets a
+  `compass_log` row be read back against the contract that produced it. It is a
+  contract version, independent of the package version; nothing pins the literal
+  (tests compare against the exported constant).
+
+### Fixed
+- **The WITNESS guard in `test/integration.js` no longer discriminates by
+  `!/confirm_pending/`.** Once the PAUSE deny stopped naming `confirm_pending`,
+  that assertion was satisfied by both classifications and could no longer tell a
+  WITNESS floor from a soft-deny. It now asserts that WITNESS mints *no* pending
+  confirmation, carries no `[soft-deny]` prefix, and renders the BLOCKED banner.
+  Proven by mutation: a hook that mints for `classification !== 'OPEN'` and
+  renders WITNESS as PAUSE passed 19/0 under the old guard and fails 18/1 under
+  this one.
+
+### Known-open (recorded, not fixed)
+- `lib/grok-adapter.js:149` still returns `pending_token` verbatim to its gated
+  caller. The universal phrasing in `CLAUDE.md` — "a gate does not hand over the
+  credential that lifts it" — is scoped to the hook path until that surface is
+  fixed too.
+- `list_pending` is now the sole designated path to the credential and
+  `mcp/server.js` leaves `session_id` optional, so an unscoped call returns every
+  unexpired token across all sessions. Pre-existing, but this change makes its
+  scope load-bearing. Operator call.
+- A model can still fetch a token through `list_pending` and self-approve.
+  Deliberate: masking it there would leave no surface from which the token can be
+  obtained, converting PAUSE into WITNESS.
 
 ## [0.12.0] — Compass V2: Action IR, semantic Guard, safe-repeat leases
 

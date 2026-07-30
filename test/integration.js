@@ -62,16 +62,37 @@ test('PreToolUse: OPEN action → empty {} + exit 0', () => {
 });
 
 test('PreToolUse: WITNESS action → deny, no override token', () => {
+  // WHY THESE ASSERTIONS AND NOT `!/confirm_pending/`: that string used to be the
+  // only thing separating a WITNESS floor from a soft-deny, because the PAUSE
+  // deny text named the tool. It no longer does — the deny now names a pending
+  // REQUEST, not the credential — so `!/confirm_pending/` is satisfied by both
+  // classifications and discriminates nothing. The guard below is rebuilt on
+  // three things a PAUSE render structurally cannot satisfy:
+  //   1. no pending row is minted at all (the hook mints only for PAUSE);
+  //   2. the `[soft-deny]` prefix, which decision-message.js derives directly
+  //      from `isPause` (and which the hook's fallback reasonText preserves);
+  //   3. the BLOCKED banner, likewise classification-driven.
+  // Do NOT assert the "immutable WITNESS floor" sentence: the hook passes
+  // saferPathFor(rule_id), and rm-rf-wildcard has a safer path, so that sentence
+  // is replaced by "Safer path: …" on exactly this specimen.
+  const sid = 'int-witness';
   const r = runHook('pre-tool-use.js', {
-    session_id: 'int-witness',
+    session_id: sid,
     tool_name: 'Bash',
     tool_input: { command: 'rm -rf /' }
   });
   assert.strictEqual(r.code, 0);
   assert.strictEqual(r.out.hookSpecificOutput.permissionDecision, 'deny');
-  assert.ok(/rm-rf/.test(r.out.hookSpecificOutput.permissionDecisionReason), 'reason names the rule');
-  assert.ok(!/confirm_pending/.test(r.out.hookSpecificOutput.permissionDecisionReason),
-    'WITNESS must NOT mint an override token');
+  const reason = r.out.hookSpecificOutput.permissionDecisionReason;
+  assert.ok(/rm-rf/.test(reason), 'reason names the rule');
+  assert.strictEqual(
+    ch.listPendingConfirmations({ session_id: sid, limit: 10 }).length, 0,
+    'WITNESS must mint no pending confirmation'
+  );
+  assert.ok(!/\[soft-deny\]/.test(reason), 'a WITNESS floor is not a soft-deny');
+  assert.ok(/T2Helix Compass - BLOCKED/.test(reason), 'WITNESS renders the BLOCKED banner');
+  assert.ok(!/approval required/i.test(reason), 'WITNESS offers no approval route');
+  assert.ok(!/confirm_pending/.test(reason), 'WITNESS must NOT mint an override token');
 });
 
 test('PreToolUse: PAUSE action → deny naming a pending request, not its token', () => {
