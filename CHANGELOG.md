@@ -3,6 +3,25 @@
 All notable changes to t2helix are documented here. Format loosely follows
 [Keep a Changelog](https://keepachangelog.com/); versioning is [SemVer](https://semver.org/).
 
+## [Unreleased]
+
+### Fixed
+- **`mcp/server.js` SSE bind** — `listen(PORT, cb)` bound every interface while
+  the startup line printed `localhost`; the unauthenticated chronicle/compass
+  surface was reachable from anything that could route to the host. Now binds
+  `127.0.0.1` by default (`--host` / `T2HELIX_SSE_HOST` to override), prints the
+  address the kernel actually returned, and warns loudly on a non-loopback bind.
+- **`tools/witness-relay/monitor_workflow_memory.js`** — `JETSON_USER` /
+  `JETSON_HOST` were interpolated into a string passed to `child_process.exec`,
+  i.e. into a shell. Builds an argv array for `execFile` instead, rejects
+  anything that is not a plain user/host name (a leading `-` lands in argv[0]
+  where `ssh` reads it as an option), and no longer polls on `require`.
+
+### Added
+- **Tests** — `test/sse-bind.js` (loopback default, advertised host == actual
+  bind, off-box probe, opt-in warning), `test/witness-relay.js` (argv
+  construction and rejection of shell-metacharacter env values).
+
 ## [0.12.0] — Compass V2: Action IR, semantic Guard, safe-repeat leases
 
 Turns the compass from raw-string gating into an action-aware Guard layer while
