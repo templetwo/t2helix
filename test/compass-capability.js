@@ -240,6 +240,26 @@ test('ruleset manifest carries every rule in load order with a pattern digest', 
   );
 });
 
+test('a failure to DESCRIBE a decision cannot break MAKING one', () => {
+  // classify() gained two new throw sites (the ruleset hash and the eligibility
+  // count). pre-tool-use's fallback path calls classify() again on exception and
+  // then emits a systemMessage, which is an ALLOW — so an unguarded throw here
+  // would be a brand-new fail-open in the function that exists to prevent them.
+  const real = crypto.createHash;
+  crypto.createHash = () => { throw new Error('simulated hash failure'); };
+  compass._resetCache();
+  try {
+    const r = compass.classify({ tool_name: 'mcp__shell__run', tool_input: { command: `${RM} -rf /` } });
+    assert.strictEqual(r.classification, 'WITNESS', 'verdict lost when provenance failed');
+    assert.strictEqual(r.rule_id, 'rm-rf-wildcard');
+    assert.strictEqual(r.ruleset_hash, null, 'unknown provenance must read as null, not a stale value');
+    assert.strictEqual(r.rules_eligible, null);
+  } finally {
+    crypto.createHash = real;
+    compass._resetCache();
+  }
+});
+
 test('compass_log records ruleset provenance and eligibility', () => {
   const prov = compass.rulesetProvenance();
   const elig = compass.eligibility({ tool_name: 'mcp__shell__run', tool_input: { command: `${RM} -rf /` } });
