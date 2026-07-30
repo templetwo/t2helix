@@ -94,6 +94,7 @@ function bash(session_id, command) {
 // would deny a Bash call containing the literal string.
 const HARD_RESET = 'git ' + 'reset' + ' --' + 'hard HEAD~1';
 const DROP_TABLE = 'psql -c "' + 'drop ' + 'table users"';
+const CRED = 'api' + '_key=abcdefghij';
 
 console.log(`T2Helix fail-closed + budget tests (data: ${tmpDir}, hook budget: ${HOOK_BUDGET_MS}ms)`);
 
@@ -405,6 +406,32 @@ test('the semantic leg is skipped only where it provably cannot change the verdi
   assert.strictEqual(openBig.legacy.classification, 'OPEN');
   assert.strictEqual(openBig.shadow.semantic_skipped, null,
     'OPEN must never be skipped — the semantic leg can escalate it');
+
+  // "Never" has to be tested with the skip FORCED, not merely with inputs that
+  // happen not to trigger it. The size gate above cannot fire for OPEN/PAUSE, but
+  // the clock gate could: with the budget at -1 every skip condition is true, so
+  // any one of them that is not gated on the fail-closed set shows up here.
+  // (It did: the clock gate skipped OPEN and PAUSE until it was gated.)
+  const prevBudget = process.env.T2HELIX_SEMANTIC_BUDGET_MS;
+  process.env.T2HELIX_SEMANTIC_BUDGET_MS = '-1';
+  try {
+    for (const [expected, command] of [['OPEN', 'ls -la'], ['PAUSE', 'echo ' + CRED]]) {
+      const v = classifyV2({ tool_name: 'Bash', tool_input: { command } }, {});
+      assert.strictEqual(v.legacy.classification, expected, `setup: expected legacy ${expected}`);
+      assert.strictEqual(v.shadow.semantic_skipped, null,
+        `${expected} was skipped with the semantic budget forced negative — an escalation can be lost`);
+      assert.ok(v.semantic && v.semantic.classification,
+        `${expected} must still carry a semantic verdict`);
+    }
+    // The same forced budget MUST still skip a WITNESS — otherwise the assertion
+    // above would pass simply because the clock gate stopped working at all.
+    const w = classifyV2({ tool_name: 'Bash', tool_input: { command: HARD_RESET } }, {});
+    assert.ok(/^legacy-leg-spent-budget/.test(String(w.shadow.semantic_skipped)),
+      `the clock gate must still fire for WITNESS, got ${w.shadow.semantic_skipped}`);
+  } finally {
+    if (prevBudget === undefined) delete process.env.T2HELIX_SEMANTIC_BUDGET_MS;
+    else process.env.T2HELIX_SEMANTIC_BUDGET_MS = prevBudget;
+  }
 });
 
 test('a legacy NOT_EVALUATED cannot be cleared or softened by the semantic leg', () => {
