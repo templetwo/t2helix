@@ -146,7 +146,7 @@ becomes a decision, never a crash. `classify()` reads only the rules file, so ev
 the DB dead the headline denials (`rm -rf /`, force-push, drop-table) still fire
 (fail-*safe*), while the memory-coupling escalation merely degrades to silent.
 
-**PreToolUse is the exception, and 0.12.1 changed it.** Every other hook writes `{}` on
+**PreToolUse is the exception, and 0.13.0 changed it.** Every other hook writes `{}` on
 an internal failure. PreToolUse cannot: `{}` is also the payload an evaluated OPEN emits,
 so an unreadable payload, a throwing classifier and a hook the harness killed at its 5s
 timeout were all reported in the same bytes as "looked at it, it's fine" — and wrote no

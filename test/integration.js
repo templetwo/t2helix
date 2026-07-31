@@ -142,7 +142,7 @@ test('PreToolUse: PAUSE override loop is single-use end-to-end', () => {
 
 // ── PreToolUse: adversarial input is not a clearance ────────────────────────
 //
-// These three asserted `{}` until 0.12.1. `{}` is the OPEN payload, so an
+// These three asserted `{}` until 0.13.0. `{}` is the OPEN payload, so an
 // unreadable payload was reported to the harness in the exact bytes an evaluated
 // clearance uses, and wrote no compass_log row at all. Exiting 0 with valid JSON
 // is still the contract — the host must not break — but the payload is now a deny

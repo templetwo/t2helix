@@ -168,7 +168,7 @@ for (const specimen of CORPUS) {
 // These assertions characterize unresolved findings. They make the audit
 // reproducible but must not be read as approval of OPEN behavior.
 //
-// The two hook columns moved in 0.12.1: a payload the gate cannot read now comes
+// The two hook columns moved in 0.13.0: a payload the gate cannot read now comes
 // back NOT_EVALUATED instead of ERROR_ALLOW (a bare `{}` plus a systemMessage) or
 // a plain OPEN. The other four seats are unchanged, and the OPEN rows below are
 // still the finding — a wrapper key the adapter does not know about is read, not

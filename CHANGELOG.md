@@ -3,210 +3,280 @@
 All notable changes to t2helix are documented here. Format loosely follows
 [Keep a Changelog](https://keepachangelog.com/); versioning is [SemVer](https://semver.org/).
 
-## [Unreleased] — Compass gates a capability, not a tool name
+## [0.13.0] — The gate fails closed, gates a capability, and stops handing over the credential
+
+A security release integrating five independently reviewed fix branches onto one
+tree. The through-line is a single failure class: **a surface that reports success
+on a failed operation, or clearance on an evaluation that never happened.** Every
+fix below closes one instance of it. Four of the five are compass changes and were
+landed in a proven order (fail-closed floor → capability gating → normalization →
+approval provenance → SSE/exec), because three of them compose and two of those
+compositions are silent.
+
+Upgrading is additive at the schema level (new columns, one new table) and is a
+**behaviour change for existing compass rules and repo policies** — see Changed.
+
+### Security
+
+- **A gate that could not evaluate a call reported the same thing as a gate that
+  evaluated and cleared it.** `hooks/pre-tool-use.js` emitted a bare `{}` — the
+  OPEN payload — when stdin did not parse, when the payload carried no
+  `tool_name`, when both classifiers threw, and when the harness killed the hook
+  at its 5,000ms timeout. No `compass_log` row was written in any of those cases.
+  A caller who could make evaluation *not happen* was therefore indistinguishable
+  from a caller whose command was found clean, and the exploit did not need to
+  defeat a single rule. There is now a fourth classification, `NOT_EVALUATED`, it
+  denies, it always writes a row, and it mints no override token — the padding
+  bypass would otherwise work in two steps instead of one.
+- **Any tool that ran a shell under a name other than `Bash` was completely
+  ungated.** Every destructive rule was scoped to the literal tool name `Bash`, so
+  `mcp__shell__run`, `Terminal` and anything else carrying a `command`/`script`
+  string bypassed the entire WITNESS floor, and its rows logged as `OPEN`.
+- **Quoted and long-form flag spellings bypassed the rules.** `rm "-rf" x` and
+  `rm --recursive --force x` cleared where `rm -rf x` denied.
+- **The deny message handed the denied party the credential that lifts the deny.**
+  The PAUSE reason string printed the single-use override token, and that string
+  is model-visible by construction.
+- **The SSE transport bound every interface while printing `localhost`.** The
+  chronicle and compass tools are unauthenticated; anything that could route to
+  the host could read and write them, and the startup line said otherwise.
+- **`tools/witness-relay/monitor_workflow_memory.js` interpolated `JETSON_USER` /
+  `JETSON_HOST` into a string passed to `child_process.exec`** — into a shell.
 
 ### Changed (BEHAVIOUR CHANGE for existing rules and repo policies)
+
 - **`tool: "Bash"` on a compass rule now means the shell CAPABILITY.** Any tool
   whose input carries a non-empty `command` or `script` string is evaluated
-  against every shell rule, whatever the tool is called. Previously a tool that
-  ran a shell under any other name was completely ungated and its rows logged as
-  `OPEN`, indistinguishable from evaluated-and-cleared. Rules naming any other
-  tool keep exact scoping.
+  against every shell rule, whatever the tool is called. Rules naming any other
+  tool keep exact scoping. This is opt-OUT, which is the right default for a
+  safety floor and must not be undocumented.
 - **`tool_exact: true`** (new) opts a shell rule back out — Bash and nothing else.
   **`capability: "shell"`** (new) is the opt-in counterpart for a rule scoped to
   some other tool name.
 - **The match haystack is chosen per RULE, not per call.** A rule that names the
   tool, or is unscoped, is matched against the action string; a rule reached by
-  the shell capability is matched against the payload field values; a rule
-  reached both ways is matched against both, OR-ed, with identical strings
-  scanned once. Choosing one haystack for the whole call blinded every
-  tool-scoped rule whenever a `command` field was present.
+  the shell capability is matched against the payload field values; a rule reached
+  both ways is matched against both, OR-ed, with identical strings scanned once.
+  Choosing one haystack for the whole call blinded every tool-scoped rule whenever
+  a `command` field was present.
 - **Every command-shaped field is evaluated, not the first.** A benign `command`
   can no longer shadow a destructive `script` in the same payload.
-- Known cost, documented in `COMPASS_CONSISTENCY.md` and asserted in the test
-  suite: prose in a `command`/`script` field can match a rule and hard-deny.
-
-### Added
-- `compass_log.ruleset_hash` / `ruleset_source` / `rules_eligible`, and a
-  `compass_rulesets` table holding each distinct ruleset's manifest once.
-  `rules_eligible: 0` records "no rule could evaluate this call".
-- `test/compass-capability.js`, wired into `npm test` and `npm run test:capability`.
-
-### Fixed
-- `scripts/replay-compass.js` reconstructed any non-Bash tool call as
-  `{raw: …}`, so every capability-gated deny replayed as `OPEN` and was reported
-  as a softening. It now parses the stored envelope, and counts a row whose
-  summary was truncated as `unreplayable` instead of replaying it and
-  manufacturing a false softening.
-
-## [Unreleased] — Haystack normalization (finding F) + reset flag position (finding J)
-
-> **LANDING ORDER — READ BEFORE MERGING. Land finding D before or together with
-> this branch.**
->
-> The normalized second pass re-runs every rule pattern. That is free against a
-> linear pattern and it is not free against finding D's unfixed `git-push-force`
-> pattern, `git\s+push\s+(?:[^|;&]*\s+)?(?:--force…)`, where `[^|;&]` is a
-> superset of `\s` and the quantifiers compete for one contiguous whitespace run.
-> A command padded with contiguous spaces is already superlinear on that pattern;
-> adding **one quoted token or one long flag** defeats the `normalized ===
-> haystack` skip, so that superlinear cost is paid **twice**.
->
-> Measured against the 5000ms PreToolUse budget (two machines, agreeing):
->
-> | padding | pure padding (pass 2 skipped) | + one quoted token (pass 2 runs) |
-> |---|---|---|
-> | 2000 sp | 1243–1275 ms | 2606–2658 ms |
-> | 2600 sp | 2749 ms | **5656 ms — over budget** |
-> | 3000 sp | 4220 ms | 9198 ms |
->
-> Effect: the padding needed to blow the budget drops from **~3,200 to ~2,450
-> contiguous spaces, roughly a 23% discount on the C+D chain**, and a blown
-> budget is finding C's fail-open (hook killed, nothing emitted, call proceeds
-> ungated). Pure padding is unaffected — pass 2 is skipped, 2792 ms vs 2749 ms —
-> so the discount requires the extra token.
->
-> This is a **composition hazard with a sibling branch, not a defect in F+J**.
-> With D's linear pattern landed, two passes of a linear match is still linear
-> and the effect vanishes completely. Landing F+J alone is a knowingly-accepted
-> discount, not a surprise. The hazard is pinned in
-> `test/compass-normalization.js` → `CHARACTERIZATION: LANDING ORDER`, which
-> detects whether D has landed and reports it on every run.
-
-### Fixed
-- **Quoted and long-form flag spellings are no longer a bypass** (finding F).
-  `lib/compass.js` matches the command **as written** first and normalizes only
-  when that pass comes back clean. That ordering is the whole safety argument:
-  normalization can only ADD a denial and can never change WHICH rule fires on a
-  command that already denied.
-- **`git reset --hard` is caught wherever the flag sits** (finding J). The rule
-  walked from the subcommand straight to the flag; it now walks intervening
-  tokens, so `git reset HEAD~1 --hard` is gated like `git reset --hard HEAD~1`.
-
-### Added
-- **`test/compass-normalization.js` + `test/fixtures/compass-normalization-specimens.json`**
-  — the bypass specimens, a 40-command prose corpus that must not move, a
-  monotonicity property over the whole corpus, and the cost characterizations.
-
-### Known limitation (recorded, not fixed)
-- **A trailing shell comment is read as argument text.** `git reset HEAD~1 #
-  avoid --hard` and `git reset --soft HEAD~1 # not --hard` move OPEN → WITNESS in
-  all three modes. It fails in the SAFE direction, and the legacy string layer
-  already cannot tell an invocation from an echo of one.
-  The one-character remedy — excluding `#` from the token class — is **worse and
-  must not be taken**: git refs and paths may contain `#` mid-token, and it flips
-  `git reset refs/heads/topic#1 --hard`, `git reset feature#42 --hard` and
-  `git reset HEAD~1 -- a#b.txt --hard` from WITNESS to OPEN. Two fail-safe
-  denials traded for three fail-open passes on commands that actually discard
-  work. Both halves are pinned in the `comment_boundary` fixture group; the
-  real-catch half is the guard that goes red if someone reaches for it.
-
-### Known-open bypasses (out of scope for this branch, not introduced by it)
-Verdicts below were measured on this branch (bundled rules only,
-`T2HELIX_POLICY_DIR=''`), not carried over from prose. **`shadow` is the shipped
-default**, so an OPEN there is an ungated command.
-
-| command | legacy | shadow | enforce |
-|---|---|---|---|
-| `rm --recursive=yes /tmp/*` | OPEN | OPEN | WITNESS |
-| `rm --recursive=yes --force /tmp/*` | OPEN | OPEN | WITNESS |
-| `rm --force=1 /tmp/*` | OPEN | OPEN | PAUSE |
-| `rm \-rf /tmp/*` | OPEN | OPEN | PAUSE |
-| `rm $'-rf' /tmp/*` | OPEN | OPEN | WITNESS |
-
-- The `--flag=value` long-form is in scope for finding F's class and is **not
-  closed**: the rewrite's `(?![\w-])` lookahead permits `--recursive=yes` →
-  `-r=yes`, which then fails the rule's `-[rRf]+\s+` because of the `=`. Closing
-  it means stripping an `=value` suffix before mapping — a pattern edit, and this
-  codebase has reverted two of those, so it deserves its own adversarial pass
-  rather than being tacked on here.
-- The backslash-escape and ANSI-C spellings are pre-existing and were never
-  claimed. F closes the quoted and long-form subset, not the whole bypass class.
-- A repo-policy rule with a `condition` and no `pattern` fires on the first pass
-  and starves the normalized pass. Not a regression (the same command returned
-  the same verdict before normalization existed); pinned as a CHARACTERIZATION.
-
-## [Unreleased] — Approval credential and approval provenance
-
-### Changed
+- **`classify()` matches the command as written first, and normalizes only when
+  that pass comes back clean.** The pass boundary is the RULESET, not the rule.
+  That ordering is the whole safety argument: normalization can only ADD a denial
+  and can never change WHICH rule fires on a command that already denied. Landing
+  it inside the single loop reintroduces the 2026-07-26 regression, where
+  `rm --force <file> && <a force push>` measured DENY under every mode before and
+  ALLOW under enforce after.
 - **The PAUSE deny reason no longer carries the override token.** It names the
   pending request by id and says approval is required; the token is found through
-  `list_pending`. The deny string is read by the party being denied, so the gate
-  was volunteering the credential that lifts it. `renderDecision` still takes
-  `opts.token` — as a signal that a request exists, never as content.
+  `list_pending`. `renderDecision` still takes `opts.token` — as a signal that a
+  request exists, never as content.
 - **`compass_log.user_override`** on a consumed approval is now
-  `token:<pending_id> origin=<origin>` rather than the bare pending id, so the log
-  states which surface the approval came from. The separator is a space because
-  the colon form matches `lib/secrets.js`'s own assignment pattern and would be
-  scrubbed to `[REDACTED]` by any surface that redacts.
+  `token:<pending_id> origin=<origin>` rather than the bare pending id. The
+  separator is a space because the colon form matches `lib/secrets.js`'s own
+  assignment pattern and would be scrubbed to `[REDACTED]` by any surface that
+  redacts.
+- **`MESSAGE_VERSION` is `decision-message/0.12.2`** (`lib/decision-message.js`).
+  See Integration findings — one string, two contract changes.
+- Known cost, documented in `COMPASS_CONSISTENCY.md` and asserted in the suite:
+  prose in a `command`/`script` field can match a rule and hard-deny.
 
 ### Added
+
+- **`NOT_EVALUATED` and `isClearance()`** (`lib/compass.js`). Every allow/block
+  site asks the predicate instead of comparing against the string `'OPEN'`, so a
+  classification a caller has never heard of cannot fall through as allowed. The
+  Grok and Codex adapters honour it too.
+- **Time budgets** — `T2HELIX_CLASSIFY_BUDGET_MS` (1,200ms), `T2HELIX_RULE_BUDGET_MS`
+  (400ms), `T2HELIX_GATE_BUDGET_MS` (3,500ms), and for the semantic leg
+  `T2HELIX_SEMANTIC_SKIP_BYTES` (4,096) / `T2HELIX_SEMANTIC_BUDGET_MS` (1,200).
+  The bundled patterns are held linear by the suite, but a repo-local policy
+  compiles operator regexes this file has never seen, and there the budget is the
+  only backstop. Overrunning yields
+  `NOT_EVALUATED` naming the rules that never ran — not `OPEN`.
+- **`T2HELIX_GATE_FAILURE_MODE=open`** — the escape hatch. Fail-closed is right for
+  a gate, but a gate that denies every call and cannot be turned off from outside
+  the session is a brick. It governs the non-evaluation path only, never a real
+  WITNESS or PAUSE, and the audit row is written either way so the hatch cannot
+  hide a gap.
+- **`compass_log.ruleset_hash` / `ruleset_source` / `rules_eligible`**, and a
+  `compass_rulesets` table holding each distinct ruleset's manifest once.
+  `rules_eligible: 0` records "no rule could evaluate this call". Additive
+  migration; NULL means the row predates the column.
+- **`semantic_skipped`** on the shadow record — null when the semantic leg ran,
+  otherwise the reason it was not consulted, so a shadow row with `agree: null` is
+  distinguishable from one where the leg silently failed. The same audit-integrity
+  property `NOT_EVALUATED` exists for, one layer down.
 - **Approval provenance** — `pending_confirmations.approved_origin` and
   `approved_tty` (additive migration). `approveConfirmation({ token, origin })`
   records the origin its caller states; `mcp/server.js` hardcodes `'mcp'` so a
   caller cannot declare its own, and an unnamed origin records `unattributed`
   rather than NULL. Nothing gates on either field — they exist so an approval row
   can no longer read as operator-driven when it was not.
-- **`test/approval-provenance.js`** — the deny/message strings carry no token, the
-  override loop still closes through `list_pending`, and every approval records
-  where it came from.
-- **`MESSAGE_VERSION` bumped to `decision-message/0.12.1`** (`lib/decision-message.js`).
-  The message contract changed materially, and this identifier is what lets a
-  `compass_log` row be read back against the contract that produced it. It is a
-  contract version, independent of the package version; nothing pins the literal
-  (tests compare against the exported constant).
+- **SSE host control** — `--host` / `T2HELIX_SSE_HOST`, defaulting to `127.0.0.1`.
+  The startup line prints the address the kernel actually returned, and a
+  non-loopback bind warns loudly.
+- **Six test files**, all wired into `npm test` (18 files total):
+  `compass-fail-closed.js`, `compass-capability.js`, `compass-normalization.js`
+  (+ `fixtures/compass-normalization-specimens.json`), `approval-provenance.js`,
+  `sse-bind.js`, `witness-relay.js`.
 
 ### Fixed
-- **The WITNESS guard in `test/integration.js` no longer discriminates by
+
+- **The `git-push-force` and `no-verify` patterns were superlinear.** Both used a
+  segment-wide `[^|;&]*`, which is a superset of `\s`, so a command padded with
+  contiguous spaces burned the whole PreToolUse timeout — and a killed hook emits
+  nothing, which the harness reads as no objection. Rewritten with a tempered
+  guard that cannot consume past a later trigger.
+- **The semantic leg could run the hook past its timeout after the verdict was
+  already known** (`lib/compass-v2.js`). On `git reset --hard HEAD~5; echo ` +
+  80,000 a's the legacy leg reached WITNESS in 1ms and `classifySemantic` then
+  spent 9,647ms at 100KB — so the hook was killed at 5s *after* a correct deny had
+  been computed, and the harness read the silence as no objection. A budget cannot
+  preempt a regex already entered, so the leg is now declined in the three cases
+  where declining provably cannot change the verdict: a legacy `NOT_EVALUATED`
+  (which `mergeDecisions` treats as absorbing), a legacy WITNESS on an oversize
+  action (WITNESS is the top of the lattice — the leg could only CLEAR it, so
+  skipping fails closed), and a legacy leg that already spent its budget. **OPEN
+  and PAUSE are never skipped at any size**, because there the leg can escalate and
+  dropping an escalation would be a fail-open. `parseToIR` is kept unconditionally
+  — it is linear and supplies the hash the token and lease flows key on.
+- **Long-flag spellings reach the predicates**, mapped from the same
+  `LONG_FLAG_LETTERS` table the Action IR parser uses so the two layers cannot
+  drift.
+- **`git reset --hard` is caught wherever the flag sits.** The rule walked from the
+  subcommand straight to the flag; it now walks intervening tokens, so
+  `git reset HEAD~1 --hard` is gated like the adjacent spelling.
+- **`lib/secrets.js`'s url-auth pattern was quadratic.** `[a-z][a-z0-9+.-]*://`
+  restarted at every character of a long alphanumeric run and scanned to the end
+  looking for `://` — 4,772ms on `echo ` + 100,000 a's, 17,683ms at 200,000, paid
+  once by the legacy credential rule and again by the semantic leg, which alone
+  was enough to run the hook past its 5,000ms budget. Anchored with a `(?<![a-z])`
+  scheme-start lookbehind: a performance anchor, not a semantic narrowing, proved
+  test-equivalent by enumeration (423,654 inputs, 0 divergences) and compared on
+  capture groups rather than hit/miss so the detector-implies-redactor invariant is
+  untouched.
+- **`scripts/replay-compass.js`** reconstructed any non-Bash tool call as
+  `{raw: …}`, so every capability-gated deny replayed as `OPEN` and was reported
+  as a softening. It now parses the stored envelope, and counts a row whose
+  summary was truncated as `unreplayable` instead of manufacturing a false
+  softening. `--strict` no longer goes quiet on rows it could not adjudicate.
+- **Audit metadata cannot break a verdict.** Hashing the ruleset runs in its own
+  pass behind its own try/catch: a throw there would propagate out of `classify()`,
+  and the hook's legacy fallback calls `classify()` again — so the hook would emit
+  a `systemMessage` and ALLOW. Describing a decision is not allowed to break
+  making one.
+- **`test/integration.js`'s WITNESS guard no longer discriminates by
   `!/confirm_pending/`.** Once the PAUSE deny stopped naming `confirm_pending`,
-  that assertion was satisfied by both classifications and could no longer tell a
-  WITNESS floor from a soft-deny. It now asserts that WITNESS mints *no* pending
-  confirmation, carries no `[soft-deny]` prefix, and renders the BLOCKED banner.
-  Proven by mutation: a hook that mints for `classification !== 'OPEN'` and
-  renders WITNESS as PAUSE passed 19/0 under the old guard and fails 18/1 under
-  this one.
+  that assertion was satisfied by both classifications. It now asserts that
+  WITNESS mints *no* pending confirmation, carries no `[soft-deny]` prefix, and
+  renders the BLOCKED banner. Proven by mutation: a hook that mints for
+  `classification !== 'OPEN'` and renders WITNESS as PAUSE passed 19/0 under the
+  old guard and fails 18/1 under this one.
+- **`mcp/server.js` SSE bind** — see Security. Binds loopback by default and
+  reports the address it actually got.
+- **`tools/witness-relay/monitor_workflow_memory.js`** builds an argv array for
+  `execFile` instead of a shell string, rejects anything that is not a plain
+  user/host name (a leading `-` lands in `argv[0]` where `ssh` reads it as an
+  option), and no longer polls on `require`.
+
+### Integration findings (visible only with all five fixes on one tree)
+
+Each of these merged without a textual conflict and would have shipped wrong.
+
+- **`MESSAGE_VERSION` named two contracts.** The approval branch bumped it to
+  `decision-message/0.12.1` for its own change (the PAUSE next-step dropping the
+  token); the fail-closed branch made a different material change to the same
+  `renderDecision` contract (a fourth classification with its own banner and
+  next-step branch) and did not bump. The hunks were disjoint. Resolved as
+  **`decision-message/0.12.2`**, the union, with both changes named at the
+  constant. `test/compass-fail-closed.js` was the one stale consumer — it scraped
+  the override credential out of the deny text to set up its approval-reuse case,
+  which is precisely the leak the other branch closed; it now reads the pending
+  row from the ledger and asserts both halves of the new contract.
+- **Normalization is a property of the TARGET, not of the call.** The dequote pass
+  arrived guarded by `tool_name !== 'Bash'`, correctly: `actionString()` serialises
+  a non-Bash `tool_input` to JSON, where quotes are structure. But capability
+  gating had just started feeding non-Bash `command`/`script` values to the same
+  shell rules, and those payloads are raw shell. Carried across verbatim, the
+  guard left every tool the capability fix newly gated reachable by exactly the
+  quoted spelling the dequote fix exists to close — measured on the merge before
+  the fix: a quoted recursive-delete flag denied through `Bash` and CLEARED
+  through `mcp__shell__run`. `normalizeTarget()` now decides per target: a shell
+  payload field is normalized whatever the tool is called; the action string is
+  normalized only for Bash.
+- **The rewritten `git-reset-hard` pattern was superlinear**, and only the
+  fail-closed branch's linearity harness could see it — the two branches never
+  met. Measured 5,590ms on a 200KB repeated-trigger pad, past the 5,000ms hook
+  budget: hook killed, nothing emitted, call ungated. Fixed with the same
+  tempering idiom the other two git rules got, proven equivalent to the
+  un-tempered pattern on 66,429 strings from an exhaustive token-grammar walk plus
+  12 hand cases (zero divergences), 5,590ms → 1ms.
+- **The `NOT_EVALUATED` verdict carried no ruleset provenance.** `lib/schema.sql`
+  defines a NULL `ruleset_hash` as "this row predates the column", so the one
+  classification meaning *never evaluated* would have been the least
+  reconstructable row in the log, and mislabelled besides. The audit fields are now
+  spread onto that return, and `emitNotEvaluated()` stamps provenance at the three
+  hook sites where a `tool_input` exists. The three that fire before one is read
+  (unparseable payload, no `tool_name`, an unhandled throw out of `main`) carry
+  NULL honestly.
+- **The landing-order hazard is discharged.** Landing normalization on the unfixed
+  superlinear patterns dropped the padding needed to blow the 5,000ms budget from
+  ~3,200 to ~2,450 contiguous spaces, a ~23% discount, because the second pass
+  paid the superlinear cost twice. With the linear patterns landed first, two
+  passes of a linear match is still linear and the effect is gone; the
+  characterization test in `test/compass-normalization.js` detects whether the
+  patterns are fixed and reports on every run. The normalized pass additionally
+  skips any target normalization did not change, so the integrated worst case is
+  one extra scan per CHANGED string rather than a doubling of every scan.
 
 ### Known-open (recorded, not fixed)
-- `lib/grok-adapter.js:149` still returns `pending_token` verbatim to its gated
-  caller. The universal phrasing in `CLAUDE.md` — "a gate does not hand over the
+
+- **`lib/grok-adapter.js` still returns `pending_token` verbatim to its gated
+  caller.** The universal phrasing in `CLAUDE.md` — "a gate does not hand over the
   credential that lifts it" — is scoped to the hook path until that surface is
-  fixed too.
-- `list_pending` is now the sole designated path to the credential and
-  `mcp/server.js` leaves `session_id` optional, so an unscoped call returns every
-  unexpired token across all sessions. Pre-existing, but this change makes its
+  fixed too; `README_GROK_INTEGRATION.md` states the asymmetry per seat.
+- **`list_pending` is the sole designated path to the credential and
+  `mcp/server.js` leaves `session_id` optional**, so an unscoped call returns every
+  unexpired token across all sessions. Pre-existing, but this release makes its
   scope load-bearing. Operator call.
-- A model can still fetch a token through `list_pending` and self-approve.
+- **A model can still fetch a token through `list_pending` and self-approve.**
   Deliberate: masking it there would leave no surface from which the token can be
   obtained, converting PAUSE into WITNESS.
-
-## [Unreleased]
-
-### Fixed
-- **`mcp/server.js` SSE bind** — `listen(PORT, cb)` bound every interface while
-  the startup line printed `localhost`; the unauthenticated chronicle/compass
-  surface was reachable from anything that could route to the host. Now binds
-  `127.0.0.1` by default (`--host` / `T2HELIX_SSE_HOST` to override), prints the
-  address the kernel actually returned, and warns loudly on a non-loopback bind.
-- **`tools/witness-relay/monitor_workflow_memory.js`** — `JETSON_USER` /
-  `JETSON_HOST` were interpolated into a string passed to `child_process.exec`,
-  i.e. into a shell. Builds an argv array for `execFile` instead, rejects
-  anything that is not a plain user/host name (a leading `-` lands in argv[0]
-  where `ssh` reads it as an option), and no longer polls on `require`.
-
-### Added
-- **Tests** — `test/sse-bind.js` (loopback default, advertised host == actual
-  bind, off-box probe, opt-in warning), `test/witness-relay.js` (argv
-  construction and rejection of shell-metacharacter env values, plus three legs
-  that run the monitor as a real process: a hostile `JETSON_HOST`/`JETSON_USER`
-  must exit 2 with the variable named and never create a benign marker file, and
-  under a benign env the call site must invoke `execFile('ssh', sshArgv())` and
-  no shell binary — mutation-proved against a restored injection).
-
-### Documentation
-- **`tools/witness-relay/README.md`** — documents the new plain-name restriction
-  on `JETSON_USER` / `JETSON_HOST`, the exit-2 startup behavior, and the
-  legitimate values (IPv6 literals, `_gateway`, dash-leading `ssh_config`
-  aliases) the fail-closed validation now rejects.
+- **`deploy-prod` and the repo's own `t2helix-protect-chronicle-db` rule remain
+  superlinear**, named in `KNOWN_SUPERLINEAR` in `test/compass-fail-closed.js` as
+  an upper bound — a new offender fails the suite, and so does fixing one without
+  removing its entry. `deploy-prod`'s read-only carve-out can block an EARLIER
+  trigger that a later one does not, so bounding its scans would change which
+  commands match; rewriting a WITNESS rule's carve-outs on a timing argument alone
+  needs its own equivalence proof. The repo-policy rule is left as-is deliberately:
+  it is the concrete instance of the population the budgets exist for.
+- **`escalateByMemory()`'s escalation branch builds a fresh result object and drops
+  the audit fields.** No consumer reads them off the result — `hooks/pre-tool-use.js`
+  resolves provenance independently, so a memory-escalated PAUSE row still records
+  `ruleset_hash` and `rules_eligible` — but a future consumer that trusted the
+  result object would read "provenance unknown".
+- **`--flag=value` long-form is not closed.** The rewrite's `(?![\w-])` lookahead
+  permits `--recursive=yes` → `-r=yes`, which then fails the rule's `-[rRf]+\s+`
+  because of the `=`. Closing it means stripping an `=value` suffix before mapping
+  — a pattern edit, and this codebase has reverted two of those.
+- **Backslash-escape and ANSI-C spellings** (`rm \-rf`, `rm $'-rf'`) are
+  pre-existing and were never claimed. The quoted and long-form subset is closed,
+  not the whole bypass class.
+- **A trailing shell comment is read as argument text.** `git reset HEAD~1 # avoid
+  --hard` moves OPEN → WITNESS. It fails in the SAFE direction. The one-character
+  remedy — excluding `#` from the token class — is worse and must not be taken: git
+  refs and paths may contain `#` mid-token, and it flips three real
+  work-discarding commands from WITNESS to OPEN. Both halves are pinned in the
+  `comment_boundary` fixture group.
+- **A repo-policy rule with a `condition` and no `pattern`** fires on the first
+  pass and starves the normalized pass. Not a regression; pinned as a
+  characterization.
+- **`README.md`'s tool count says eighteen; the registry exposes fifteen.**
+  Pre-existing on the base commit (three safe-repeat lease tools were withdrawn
+  there) and unrelated to these fixes, so it is reported rather than folded in.
+  `npm run release:doctor` names it.
 
 ## [0.12.0] — Compass V2: Action IR, semantic Guard, safe-repeat leases
 

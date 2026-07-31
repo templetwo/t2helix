@@ -103,7 +103,7 @@ Under `defaultMode: bypassPermissions` (the typical Claude Code config), `permis
 
 WITNESS has no override path — those operations require manual rule edits.
 
-## When the gate cannot decide (v0.12.1)
+## When the gate cannot decide (v0.13.0)
 
 A PreToolUse hook that fails internally used to emit `{}`, which is the same payload an
 evaluated OPEN emits — so an unreadable payload or a hook killed at its 5s timeout was
@@ -115,7 +115,7 @@ slow pattern cannot starve the rules after it.
 
 | Env var | Default | Effect |
 | --- | --- | --- |
-| `T2HELIX_GATE_FAILURE_MODE` | `deny` | `open` restores the pre-0.12.1 permissive behaviour for non-evaluation paths only. Never affects a real WITNESS or PAUSE; the audit row is written either way. |
+| `T2HELIX_GATE_FAILURE_MODE` | `deny` | `open` restores the pre-0.13.0 permissive behaviour for non-evaluation paths only. Never affects a real WITNESS or PAUSE; the audit row is written either way. |
 | `T2HELIX_GATE_BUDGET_MS` | `3500` | Above this, the hook will not return a clearance it spent too long producing. |
 | `T2HELIX_CLASSIFY_BUDGET_MS` | `1200` | Wall clock for the whole rule loop. |
 | `T2HELIX_RULE_BUDGET_MS` | `400` | A rule slower than this is named in the row's evidence. |
