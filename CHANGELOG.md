@@ -179,6 +179,35 @@ default**, so an OPEN there is an ungated command.
   Deliberate: masking it there would leave no surface from which the token can be
   obtained, converting PAUSE into WITNESS.
 
+## [Unreleased]
+
+### Fixed
+- **`mcp/server.js` SSE bind** — `listen(PORT, cb)` bound every interface while
+  the startup line printed `localhost`; the unauthenticated chronicle/compass
+  surface was reachable from anything that could route to the host. Now binds
+  `127.0.0.1` by default (`--host` / `T2HELIX_SSE_HOST` to override), prints the
+  address the kernel actually returned, and warns loudly on a non-loopback bind.
+- **`tools/witness-relay/monitor_workflow_memory.js`** — `JETSON_USER` /
+  `JETSON_HOST` were interpolated into a string passed to `child_process.exec`,
+  i.e. into a shell. Builds an argv array for `execFile` instead, rejects
+  anything that is not a plain user/host name (a leading `-` lands in argv[0]
+  where `ssh` reads it as an option), and no longer polls on `require`.
+
+### Added
+- **Tests** — `test/sse-bind.js` (loopback default, advertised host == actual
+  bind, off-box probe, opt-in warning), `test/witness-relay.js` (argv
+  construction and rejection of shell-metacharacter env values, plus three legs
+  that run the monitor as a real process: a hostile `JETSON_HOST`/`JETSON_USER`
+  must exit 2 with the variable named and never create a benign marker file, and
+  under a benign env the call site must invoke `execFile('ssh', sshArgv())` and
+  no shell binary — mutation-proved against a restored injection).
+
+### Documentation
+- **`tools/witness-relay/README.md`** — documents the new plain-name restriction
+  on `JETSON_USER` / `JETSON_HOST`, the exit-2 startup behavior, and the
+  legitimate values (IPv6 literals, `_gateway`, dash-leading `ssh_config`
+  aliases) the fail-closed validation now rejects.
+
 ## [0.12.0] — Compass V2: Action IR, semantic Guard, safe-repeat leases
 
 Turns the compass from raw-string gating into an action-aware Guard layer while

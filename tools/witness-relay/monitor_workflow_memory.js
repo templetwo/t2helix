@@ -12,20 +12,33 @@
  *   T2HELIX_SYNC_INTERVAL   Poll interval in seconds (default: 5)
  *   JETSON_USER             SSH user for the relay host (default: jetson)
  *   JETSON_HOST             SSH host for the relay host (default: jetson.local)
+ *
+ * JETSON_USER / JETSON_HOST must be plain names ([A-Za-z0-9] then dots, dashes,
+ * underscores); anything else stops the monitor at startup.
  */
 
-const { exec } = require('child_process');
+const { execFile } = require('child_process');
 const ch = require('../../lib/chronicle');
 
 const POLL_INTERVAL_MS = (parseInt(process.env.T2HELIX_SYNC_INTERVAL, 10) || 5) * 1000;
+const REMOTE_READ = 'cat ~/witness_relay/workflow_memory.jsonl';
+// A plain user/host name: no shell metacharacters, and no leading '-' — argv[0]
+// starting with a dash is read by ssh as an option (-oProxyCommand=...), which
+// is the injection one layer below the shell.
+const RELAY_NAME = /^[A-Za-z0-9][A-Za-z0-9._-]*$/;
+
 // Set JETSON_USER / JETSON_HOST to point at your relay host. Placeholders below
 // are intentionally generic so no private network detail ships in the repo.
-const JETSON_USER = process.env.JETSON_USER || 'jetson';
-const JETSON_HOST = process.env.JETSON_HOST || 'jetson.local';
-const SSH_CMD = `ssh ${JETSON_USER}@${JETSON_HOST} "cat ~/witness_relay/workflow_memory.jsonl"`;
-
-console.log(`T2Helix Workflow Memory Monitor started.`);
-console.log(`Polling Jetson (${JETSON_USER}@${JETSON_HOST}) every ${POLL_INTERVAL_MS / 1000}s...\n`);
+function sshArgv(env = process.env) {
+  const user = env.JETSON_USER || 'jetson';
+  const host = env.JETSON_HOST || 'jetson.local';
+  for (const [name, value] of [['JETSON_USER', user], ['JETSON_HOST', host]]) {
+    if (!RELAY_NAME.test(value)) {
+      throw new Error(`${name} must be a plain user/host name, got ${JSON.stringify(value)}`);
+    }
+  }
+  return [`${user}@${host}`, REMOTE_READ];
+}
 
 // Query T2Helix database directly to check if a specific epoch tag already exists
 function checkEntryExists(epoch) {
@@ -37,7 +50,7 @@ function checkEntryExists(epoch) {
 
 // Fetch workflow memory from Jetson and sync it
 function syncWorkflowMemory() {
-  exec(SSH_CMD, (error, stdout, stderr) => {
+  execFile('ssh', sshArgv(), (error, stdout, stderr) => {
     if (error) {
       console.warn(`[WR-SYNC-WARN] Failed to fetch workflow memory: ${error.message}`);
       return;
@@ -115,7 +128,24 @@ function syncWorkflowMemory() {
   });
 }
 
-// Initial sync and poll setup
-syncWorkflowMemory();
-setInterval(syncWorkflowMemory, POLL_INTERVAL_MS);
+// Initial sync and poll setup. Guarded so the argv builder is loadable for
+// tests without starting a poll loop; a bad relay name stops the monitor here
+// rather than surfacing once per interval.
+if (require.main === module) {
+  let target;
+  try {
+    target = sshArgv()[0];
+  } catch (e) {
+    console.error(`[WR-SYNC-ERROR] ${e.message}`);
+    process.exit(2);
+  }
+
+  console.log(`T2Helix Workflow Memory Monitor started.`);
+  console.log(`Polling Jetson (${target}) every ${POLL_INTERVAL_MS / 1000}s...\n`);
+
+  syncWorkflowMemory();
+  setInterval(syncWorkflowMemory, POLL_INTERVAL_MS);
+}
+
+module.exports = { sshArgv };
 

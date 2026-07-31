@@ -9,6 +9,7 @@ const SERVER_INFO = { name: 't2helix', version: require('../package.json').versi
 
 // Transport flag: --transport stdio (default) | --transport sse
 // Port flag:      --port 3742 (default, SSE only)
+// Host flag:      --host 127.0.0.1 (default, SSE only) | T2HELIX_SSE_HOST
 const argv = process.argv.slice(2);
 function argValue(flag) {
   const i = argv.indexOf(flag);
@@ -16,6 +17,11 @@ function argValue(flag) {
 }
 const TRANSPORT = argValue('--transport') || 'stdio';
 const PORT = parseInt(argValue('--port') || '3742', 10);
+// This surface reads and writes the chronicle with no authentication of its
+// own, so it stays on loopback unless someone asks for otherwise in as many
+// words. Same default the dashboard binds to.
+const HOST = argValue('--host') || process.env.T2HELIX_SSE_HOST || '127.0.0.1';
+const LOOPBACK_HOSTS = new Set(['127.0.0.1', '::1']);
 
 const TOOLS = [
   {
@@ -543,9 +549,19 @@ function startSSE() {
     }
   });
 
-  httpServer.listen(PORT, () => {
-    const actualPort = httpServer.address().port;
-    process.stderr.write(`T2Helix MCP (SSE) listening on http://localhost:${actualPort}/sse\n`);
+  // Report the address the kernel actually gave us, never the one we asked
+  // for: a startup line that names a host it did not bind is a false all-clear.
+  httpServer.listen(PORT, HOST, () => {
+    const addr = httpServer.address();
+    const shown = addr.family === 'IPv6' ? `[${addr.address}]` : addr.address;
+    process.stderr.write(`T2Helix MCP (SSE) listening on http://${shown}:${addr.port}/sse\n`);
+    if (!LOOPBACK_HOSTS.has(addr.address)) {
+      process.stderr.write(
+        `[t2helix] WARNING: SSE bound to ${addr.address} — the chronicle and compass tools are ` +
+        'reachable from off this machine, unauthenticated. Unset T2HELIX_SSE_HOST (or drop --host) ' +
+        'to return to loopback.\n'
+      );
+    }
   });
 
   const shutdown = () => {
