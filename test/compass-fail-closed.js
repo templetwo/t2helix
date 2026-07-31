@@ -161,10 +161,15 @@ test('every bundled rule stays inside the per-rule budget on adversarial padding
   ];
   const slow = [];
   for (const rule of rules) {
-    if (!rule._regex) continue;
+    if (!rule._regex && !rule._matcher) continue;
     for (const s of shapes) {
       const t = Date.now();
-      rule._regex.test(s);
+      // compass.ruleTest, not rule._regex.test: a rule may ship a pattern as its
+      // SPECIFICATION and be evaluated by an equivalent linear matcher, and a
+      // cost test that reaches past the engine measures code the gate does not
+      // run. That gap is exactly how deploy-prod stayed a named residual in a
+      // suite written to watch for it.
+      compass.ruleTest(rule, s);
       const ms = Date.now() - t;
       if (ms > 100) slow.push(`${rule.id} ${ms}ms on ${s.length}b`);
     }
@@ -246,27 +251,35 @@ const ADVERSARIAL_SEEDS = {
 
 // NAMED, UNCLOSED RESIDUALS — do not delete entries to make the suite green.
 //
-// Measured at a 200,000-char pad, every other rule is 0-1ms on all four shapes;
-// these two are 3,500-4,100ms, so the signal is a 3,000x separation, not a
-// judgement call. Both are quadratic in the number of TRIGGER words in a segment.
+// Measured at a 200,000-char pad, every rule is 0-8ms on all four shapes; the one
+// entry left here is 3,500-4,100ms, so the signal is a 400x separation, not a
+// judgement call. It is quadratic in the number of TRIGGER words in a segment.
 //
-//  • deploy-prod — each of kubectl|terraform|helm|aws|gcloud re-runs two
-//    segment-wide lookarounds. PRE-EXISTING and measured IDENTICAL on fe8aa0c and
-//    on this branch (`kubectl apply ` repeated: decision at 191KB, killed at
-//    219KB, on both trees, 3 runs each). NOT fixed here because the tempered
-//    rewrite that made git-push-force and no-verify linear does not transfer:
-//    those may restart at a later trigger without loss, whereas deploy-prod's
-//    read-only carve-out can block an EARLIER trigger that a later one does not,
-//    so bounding its scans would change which commands match. Rewriting a WITNESS
-//    rule's carve-outs on a timing argument alone needs its own equivalence proof.
 //  • t2helix-protect-chronicle-db — this repo's own .t2helix/policy.json, pattern
 //    `rm\s+.*chronicle\.db`. Left AS IS deliberately: it is the concrete instance
 //    of the population the classify/gate budgets exist for — operator regexes that
-//    lib/compass has never seen and cannot linearity-check.
+//    lib/compass has never seen and cannot linearity-check. On a carrier fe8aa0c
+//    never gated, a rule like this one is now bounded from the other end too: the
+//    capability parity floor (lib/compass.capabilityOnlyCall) clears such a call
+//    rather than denying it, so an operator's slow regex can cost latency there
+//    but can no longer turn a base ALLOW into a deny. See
+//    test/compass-no-worse-than-base.js.
+//
+// CLOSED 2026-07-30 — deploy-prod. It was quadratic for the same reason, and the
+// note here said the fix "needs its own equivalence proof" because deploy-prod's
+// read-only carve-out can block an EARLIER trigger that a later one does not, so
+// the restart-at-a-later-trigger rewrite that linearised git-push-force and
+// no-verify would have changed which commands match. That proof now exists: the
+// rule keeps its pattern as the SPECIFICATION and is evaluated by
+// lib/rules/deploy-prod-matcher.js, a linear reimplementation that
+// test/compass-no-worse-than-base.js walks against the declared pattern over a
+// generated corpus of the rule's own vocabulary, failing on a divergence in
+// either direction. `kubectl apply x ` repeated: 1,935ms -> 2ms at 150KB, and
+// 8ms at 800KB where both trees previously went ungated.
 //
 // The list is an UPPER BOUND. A new superlinear rule fails the test; fixing one of
 // these also fails it (remove the entry) rather than passing silently.
-const KNOWN_SUPERLINEAR = ['deploy-prod', 't2helix-protect-chronicle-db'];
+const KNOWN_SUPERLINEAR = ['t2helix-protect-chronicle-db'];
 
 // Where a single rule's regex sits when it is linear, versus when it is not.
 const RULE_COST_PAD = 200000;
@@ -275,18 +288,26 @@ const RULE_COST_CEILING_MS = 250;
 // Every pad is built so the rule does NOT match — a matching rule returns on the
 // first hit and is therefore never the stall vector. The cost being measured is
 // the cost of FAILING to match, which is what the exploit buys.
-function padShapes({ trigger }, n) {
+function padShapes({ trigger, tail }, n) {
   return {
     'whitespace-run': trigger + ' '.repeat(n) + 'q',
     'repeated-trigger': trigger.repeat(Math.max(1, Math.floor(n / trigger.length))) + 'q',
     'unbroken-token': trigger + 'a'.repeat(n),
-    'chained-trigger': trigger.repeat(Math.max(1, Math.floor(n / trigger.length))) + ' ' + HARD_RESET
+    'chained-trigger': trigger.repeat(Math.max(1, Math.floor(n / trigger.length))) + ' ' + HARD_RESET,
+    // The tail the rule is LOOKING for, placed where the rule cannot reach it —
+    // behind a command separator. A mandatory-literal guard ("the tail word is
+    // not in the input, so skip the rule") passes the four shapes above and is
+    // defeated by this one, which is why it is here: the deploy-prod fix had to
+    // be a linearisation, not a presence check. Every trigger in the run still
+    // has to be considered and every one still fails, so this is the worst case
+    // for a rule that restarts on each occurrence.
+    'blocked-tail': trigger.repeat(Math.max(1, Math.floor(n / trigger.length))) + '|' + tail
   };
 }
 
 test('every bundled rule has adversarial coverage — a new rule cannot slip in untested', () => {
   const missing = compass.loadRules()
-    .filter(r => r._regex && !ADVERSARIAL_SEEDS[r.id])
+    .filter(r => (r._regex || r._matcher) && !ADVERSARIAL_SEEDS[r.id])
     .map(r => r.id);
   assert.deepStrictEqual(missing, [],
     `rules with no entry in ADVERSARIAL_SEEDS: ${missing.join(', ')} — add a trigger/tail seed`);
@@ -300,11 +321,11 @@ test('no rule can burn the hook budget on any pad shape, except the named residu
   const detail = [];
   const offenders = new Set();
   for (const rule of compass.loadRules()) {
-    if (!rule._regex || !ADVERSARIAL_SEEDS[rule.id]) continue;
+    if ((!rule._regex && !rule._matcher) || !ADVERSARIAL_SEEDS[rule.id]) continue;
     const shapes = padShapes(ADVERSARIAL_SEEDS[rule.id], RULE_COST_PAD);
     for (const [shape, s] of Object.entries(shapes)) {
       const t = Date.now();
-      rule._regex.test(s);
+      compass.ruleTest(rule, s);
       const ms = Date.now() - t;
       if (ms > RULE_COST_CEILING_MS) {
         offenders.add(rule.id);

@@ -182,9 +182,25 @@ budget:
   occurrence of their own trigger, so they cannot restart at every one (both proved
   equivalent to the shipped patterns by exhaustive enumeration, not by argument), and
   `lib/secrets.js` anchors its URL-scheme alternative so it cannot rescan an unbroken token
-  from every offset. `deploy-prod` and repo-policy rules stay quadratic in trigger count and
-  are named in `test/compass-fail-closed.js` as `KNOWN_SUPERLINEAR`, with the reason the
-  same rewrite does not transfer to them.
+  from every offset. `deploy-prod` could not take that rewrite — its read-only carve-out can
+  block an EARLIER trigger that a later one does not, so restarting later changes which
+  commands match — so it keeps its `pattern` as the SPECIFICATION and declares
+  `matcher_source`, evaluated by `lib/rules/deploy-prod-matcher.js` in linear time and held
+  to the pattern by an equivalence walk over 2.28M generated inputs (0 lost, 0 widened).
+  Use `compass.ruleTest(rule, s)` to run a rule, never `rule._regex.test` — a cost test that
+  reaches past the engine measures code the gate does not run, which is how this one stayed
+  a named residual in a suite watching for it. Repo-policy rules stay quadratic in trigger
+  count and are named in `test/compass-fail-closed.js` as `KNOWN_SUPERLINEAR`.
+- **A call the released gate never evaluated may not be made worse off.** Capability
+  routing gates carriers fe8aa0c skipped entirely, so on those carriers a slow scan would
+  turn a 55ms clearance into a denial or a killed hook — a regression dressed as a gate.
+  `compass.capabilityOnlyCall()` reproduces fe8aa0c's eligibility line verbatim and is true
+  only when NO rule is base-eligible; on such a call budget exhaustion returns `OPEN` /
+  `capability-scan-declined` with the row still written, which is parity, not a fail-open.
+  **Bash is excluded twice** — every bundled shell rule names it, and the predicate refuses
+  it outright, so a user ruleset written entirely as `capability: "shell"` cannot put Bash
+  on that path. Never widen this predicate to "every applying rule applies by capability":
+  that is the shape that turns the shell gate off on Bash.
 - **The semantic leg is skipped when it provably cannot move the verdict** — see
   `semanticSkipReason` in `lib/compass-v2.js`. `parseToIR` is kept unconditionally; it is
   linear and it carries the hash the token flow keys on.

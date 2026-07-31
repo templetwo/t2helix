@@ -121,13 +121,21 @@ slow pattern cannot starve the rules after it.
 | `T2HELIX_RULE_BUDGET_MS` | `400` | A rule slower than this is named in the row's evidence. |
 | `T2HELIX_SEMANTIC_SKIP_BYTES` | `4096` | Above this size, an action the legacy rules already classified WITNESS skips the semantic leg. WITNESS is the top of the lattice, so that leg could only clear it — skipping fails closed. PAUSE and OPEN are never skipped at any size, because for those the semantic leg can escalate. |
 | `T2HELIX_SEMANTIC_BUDGET_MS` | `1200` | If the legacy leg already spent this long, the semantic leg is not entered and the legacy verdict stands. |
+| `T2HELIX_CAPABILITY_BUDGET_MS` | `400` | Budget for a call the released gate would not have evaluated at all — a shell payload on a tool no rule in force names. The tighter of this and `T2HELIX_CLASSIFY_BUDGET_MS` applies. Overrunning it clears the call with `rule_matched = capability-scan-declined` rather than denying: on that carrier the previous release cleared it without reading it, so declining is parity, not a fail-open. Unreachable on `Bash`. |
 
 A budget cannot interrupt a regex already running, so the second half of the defence is
 that the patterns themselves are linear. `git-push-force` and `no-verify` are written so
 they cannot restart on every occurrence of their own trigger, and `lib/secrets.js` anchors
 the URL-scheme alternative so it cannot rescan a long unbroken token from every offset.
-Two rules remain quadratic in trigger count and are named in `test/compass-fail-closed.js`
-(`KNOWN_SUPERLINEAR`) rather than left implicit.
+`deploy-prod` could not be rewritten that way — its read-only carve-out can block an
+earlier trigger that a later one does not, so restarting later changes which commands
+match — so it keeps its pattern as the specification and is evaluated by
+`lib/rules/deploy-prod-matcher.js`, a linear reimplementation held to the pattern by an
+equivalence walk over 2.28M generated inputs (`test/compass-no-worse-than-base.js`). One
+rule remains quadratic in trigger count — this repo's own `.t2helix/policy.json` entry —
+and is named in `test/compass-fail-closed.js` (`KNOWN_SUPERLINEAR`) rather than left
+implicit. On a tool the previous release did not gate, such a rule can only cost a
+decline, never a denial: see `T2HELIX_CAPABILITY_BUDGET_MS` above.
 
 ## Where state lives
 

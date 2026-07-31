@@ -95,6 +95,23 @@ Upgrading is additive at the schema level (new columns, one new table) and is a
   compiles operator regexes this file has never seen, and there the budget is the
   only backstop. Overrunning yields
   `NOT_EVALUATED` naming the rules that never ran — not `OPEN`.
+- **`T2HELIX_CAPABILITY_BUDGET_MS`** (400ms) — the budget for a call fe8aa0c would
+  not have evaluated at all. The tighter of it and `T2HELIX_CLASSIFY_BUDGET_MS`
+  applies, so forcing the general budget down still forces it down everywhere.
+  Overrunning it yields `OPEN` with `rule_matched = capability-scan-declined`,
+  not a denial: on that carrier the released gate cleared the call without reading
+  it, so declining is parity, not a fail-open. Unreachable on Bash by construction.
+- **`matcher_source` on a rule** (`lib/compass.js`) — a rule may keep its `pattern`
+  as the specification and be evaluated by a named module's linear `test()`.
+  `compass.ruleTest(rule, s)` is the one way to run a rule, so a cost or
+  equivalence test cannot measure code the engine does not run.
+  `matcher_source`/`matcher_version` are projected into the ruleset manifest, so
+  the matcher a historical row was decided by is named and `ruleset_hash` moves
+  when it changes.
+- **`test/compass-no-worse-than-base.js`** — 16 assertions holding the release
+  gate: the deploy-prod equivalence walk, its linear-growth bound, the parity
+  floor and both Bash guards, the hook writing the row and clearing the call, and
+  the R4 Bash-parity pins.
 - **`T2HELIX_GATE_FAILURE_MODE=open`** — the escape hatch. Fail-closed is right for
   a gate, but a gate that denies every call and cannot be turned off from outside
   the session is a brick. It governs the non-evaluation path only, never a real
@@ -231,6 +248,70 @@ Each of these merged without a textual conflict and would have shipped wrong.
   skips any target normalization did not change, so the integrated worst case is
   one extra scan per CHANGED string rather than a doubling of every scan.
 
+### No worse than fe8aa0c (the release gate)
+
+Capability routing gates carriers fe8aa0c never touched. That is the point of the
+release, and it is also the one way the release could *cost* something: a call
+that used to be waved through in ~55ms at any size now gets scanned, and a scan
+can be slow, and a slow scan turns into a denial or a killed hook. The acceptance
+bar is absolute — **no input, on any carrier, may produce a worse outcome than
+fe8aa0c** — where worse means any of: base denies and this tree clears; base
+reaches a decision and this tree is killed emitting nothing; base writes an audit
+row and this tree writes none; base clears a benign command and this tree denies
+it.
+
+Two cells failed that bar and are now closed.
+
+- **`deploy-prod` was quadratic in the number of trigger words in a segment.**
+  Each `kubectl|terraform|helm|aws|gcloud` occurrence re-ran three segment-wide
+  scans. Hook-level, `kubectl apply x ` repeated: on **Bash** fe8aa0c took 1,978ms
+  and cleared at 150KB while this tree denied at 2,004ms (`NOT_EVALUATED`) — a
+  regression on the carrier the previous notes called strictly better — and at
+  400KB both trees were killed. On **mcp__shell__run** fe8aa0c cleared in 56ms at
+  every size, against 2,006ms `NOT_EVALUATED` at 150KB and a silent 5,003ms kill
+  at 400KB. The kill is the worst cell in the matrix: the call proceeds either
+  way, so it is security-equivalent, but the `compass_log` row fe8aa0c wrote is
+  lost. The rule now keeps its pattern as the **specification** and is evaluated
+  by `lib/rules/deploy-prod-matcher.js`, a linear reimplementation. The
+  equivalence proof the previous round asked for is
+  `test/compass-no-worse-than-base.js`: 2,284,440 generated inputs over the rule's
+  own vocabulary, 11,235 both-hit, **0 lost and 0 widened**. Cost 1,935ms → 2ms at
+  150KB, 8ms at 800KB. This had to be a linearisation and not a
+  trigger-word presence check: the `blocked-tail` pad shape (`kubectl apply x `
+  repeated, then `|prod`) has the target present and unreachable, and defeats a
+  presence check exactly.
+- **A budget cannot cover the rules `lib/compass` has never seen.** For a call
+  fe8aa0c would not have evaluated at all — a shell payload on a tool no rule in
+  force names — budget exhaustion now falls back to **parity with fe8aa0c**: an
+  `OPEN` row with `rule_matched = capability-scan-declined`, naming the rules that
+  did not run, and the call proceeds. The row is still written. This is licensed
+  by a single fact and nothing else: `compass.capabilityOnlyCall()` reproduces
+  fe8aa0c's eligibility line verbatim (`!rule.tool || rule.tool === tool_name`)
+  and returns true only when NO rule is base-eligible. **Bash can never reach it**,
+  guarded twice — every bundled shell rule names Bash, and the predicate also
+  refuses `Bash` outright, so a user ruleset written entirely as
+  `capability: "shell"` (which `T2HELIX_DATA_DIR/compass/rules.json` may use to
+  REPLACE the bundled set) cannot turn the shell gate off on the one tool it has
+  always covered. Pinned by a fixture.
+
+Receipts: a 420-cell hook-level sweep (12 payload shapes × 7 sizes from 20KB to
+800KB × 5 carriers — Bash, `mcp__shell__run`, `Terminal`, a future MCP tool name,
+and the Grok envelope), fe8aa0c vs this tree: **0 cells worse, 409 identical, 11
+strictly better** (all Bash cells where fe8aa0c was killed and this tree now
+clears in ~150ms). The full exploit set re-runs at 51/51 closed here against 36
+open on fe8aa0c.
+
+**R4 — prose in a `command`/`script` field.** On the newly-routed carriers, prose
+containing a trigger phrase now denies where fe8aa0c was OPEN. This is parity, not
+a regression, and it is left as parity: on a tool that EXECUTES that field as a
+shell command, such a string is a command, and Bash has denied exactly it since
+long before fe8aa0c. Un-routing by guessing whether a payload "looks like prose"
+would put a new content classifier between the payload and the gate — a larger
+attack surface than the false positive it removes. What is pinned instead is that
+the verdict never differs from Bash's, rule id included, in either direction, and
+that a payload under any field name no shell tool executes is not routed at all
+(`SHELL_PAYLOAD_FIELDS` stays `['command', 'script']`).
+
 ### Known-open (recorded, not fixed)
 
 - **`lib/grok-adapter.js` still returns `pending_token` verbatim to its gated
@@ -244,14 +325,19 @@ Each of these merged without a textual conflict and would have shipped wrong.
 - **A model can still fetch a token through `list_pending` and self-approve.**
   Deliberate: masking it there would leave no surface from which the token can be
   obtained, converting PAUSE into WITNESS.
-- **`deploy-prod` and the repo's own `t2helix-protect-chronicle-db` rule remain
-  superlinear**, named in `KNOWN_SUPERLINEAR` in `test/compass-fail-closed.js` as
-  an upper bound — a new offender fails the suite, and so does fixing one without
-  removing its entry. `deploy-prod`'s read-only carve-out can block an EARLIER
-  trigger that a later one does not, so bounding its scans would change which
-  commands match; rewriting a WITNESS rule's carve-outs on a timing argument alone
-  needs its own equivalence proof. The repo-policy rule is left as-is deliberately:
-  it is the concrete instance of the population the budgets exist for.
+- **The repo's own `t2helix-protect-chronicle-db` rule remains superlinear**, named
+  in `KNOWN_SUPERLINEAR` in `test/compass-fail-closed.js` as an upper bound — a new
+  offender fails the suite, and so does fixing one without removing its entry. It
+  is left as-is deliberately: it is the concrete instance of the population the
+  budgets exist for, an operator regex `lib/compass` has never seen. (`deploy-prod`
+  was on this list and is no longer — see "No worse than fe8aa0c" below.)
+- **On a carrier fe8aa0c never gated, an operator's slow rule buys a decline, not
+  a deny.** The capability parity floor clears such a call when the capability
+  budget runs out, so a sufficiently expensive `.t2helix/policy.json` regex can
+  cost the operator the gating that capability routing added — but never more than
+  fe8aa0c gave, which was none. Bounded at capability budget + one rule's overrun
+  (a regex cannot be preempted once entered). Bash is excluded by construction.
+  Measured in `test/compass-no-worse-than-base.js`, arm C9.
 - **`escalateByMemory()`'s escalation branch builds a fresh result object and drops
   the audit fields.** No consumer reads them off the result — `hooks/pre-tool-use.js`
   resolves provenance independently, so a memory-escalated PAUSE row still records

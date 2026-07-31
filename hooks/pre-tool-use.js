@@ -39,6 +39,17 @@ const GATE_BUDGET_MS = Number(process.env.T2HELIX_GATE_BUDGET_MS) > 0
 const FAILURE_MODE_OPEN =
   String(process.env.T2HELIX_GATE_FAILURE_MODE || '').toLowerCase() === 'open';
 
+// Set ONCE, as soon as the call has been read, and never again. True only for a
+// call fe8aa0c would not have evaluated at all — a shell payload on a tool no
+// rule in force names (see compass.capabilityOnlyCall, which is guarded twice
+// against Bash). For such a call the released gate wrote an OPEN row and
+// allowed, in constant time; every non-clearance floor below would therefore be
+// a REGRESSION rather than a safety measure, so on this one class of call the
+// floor lands on parity instead: same row, same clearance, with the reason
+// recorded. Module scope because main()'s last-resort catch has no other way to
+// see it, and that catch is one of the paths that would otherwise deny.
+let PARITY_CALL = false;
+
 // Emit the non-clearance floor. No override token is minted here, deliberately:
 // the padded-command bypass works by making evaluation not happen, so a token on
 // this path would let an attacker pad, collect, approve and retry — the same
@@ -53,24 +64,31 @@ const FAILURE_MODE_OPEN =
 // be computed against a call that was never read — and those rows carry NULL
 // honestly.
 function emitNotEvaluated({ session_id, tool_name, action_summary, rule_id, detail, evidence, provenance }) {
+  // On a base-ungated carrier the floor is PARITY, not denial. The row is still
+  // written — losing it was the worst cell in the regression matrix, because a
+  // killed hook let the call through AND destroyed the record fe8aa0c kept — but
+  // it is written as the OPEN this call has always received, naming the reason.
+  const parity = PARITY_CALL;
   try {
     logCompass({
       session_id: session_id || null,
       tool_name: tool_name || 'unknown',
       action_summary: action_summary || 'unknown action',
-      classification: NOT_EVALUATED,
-      rule_matched: rule_id,
-      reason: detail,
-      user_override: FAILURE_MODE_OPEN ? 'gate-failure-mode:open' : null,
+      classification: parity ? 'OPEN' : NOT_EVALUATED,
+      rule_matched: parity ? `${rule_id}:capability-parity` : rule_id,
+      reason: parity
+        ? `${detail} This tool carries a shell payload but no rule in force names it, so the released gate did not evaluate it either; declining to gate it is parity with that, not a clearance this gate reached.`
+        : detail,
+      user_override: FAILURE_MODE_OPEN && !parity ? 'gate-failure-mode:open' : null,
       evidence_json: evidence || null,
       message_version: MESSAGE_VERSION,
       ...(provenance || {})
     });
   } catch (e) {
-    process.stderr.write(`[t2helix] NOT_EVALUATED row dropped: ${e.message}\n`);
+    process.stderr.write(`[t2helix] ${parity ? 'capability-parity' : 'NOT_EVALUATED'} row dropped: ${e.message}\n`);
   }
 
-  if (FAILURE_MODE_OPEN) {
+  if (parity || FAILURE_MODE_OPEN) {
     process.stdout.write(JSON.stringify({}));
     process.exit(0);
   }
@@ -117,6 +135,18 @@ async function main() {
       detail: 'The hook payload carried no tool_name, so there was no action to classify.'
     });
     return;
+  }
+
+  // Resolved here, before any classification, so every floor below it — the
+  // budget floor, the late-clearance floor, the classifier-failure floor and
+  // main()'s last-resort catch — sees the same answer. It reads the ruleset and
+  // the tool name only; it never reads the payload, so it cannot itself be the
+  // slow thing it exists to bound.
+  try {
+    PARITY_CALL = legacyCompass.capabilityOnlyCall({ tool_name, tool_input });
+  } catch (e) {
+    PARITY_CALL = false; // unknown means "not parity" — deny stays the default
+    process.stderr.write(`[t2helix] capability-parity check unavailable: ${e.message}\n`);
   }
 
   // Belt-and-suspenders: also write session_id here in case PreToolUse fires
