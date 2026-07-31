@@ -522,9 +522,20 @@ test('an approved token for the same action does not clear a non-evaluation', ()
   const sid = 'fc-no-reuse';
   const command = 'echo api_key=zzz';
   const first = runGate(bash(sid, command));
-  const m = /token="([0-9a-f]+)"/.exec(first.reason);
-  assert.ok(m, 'the PAUSE minted a token');
-  assert.strictEqual(ch.approveConfirmation({ token: m[1] }).ok, true);
+  // The token is NOT scraped from the deny text any more — that text is read by
+  // the party being denied, and handing it the credential that lifts the deny was
+  // the leak the approval-provenance fix closed. It names the pending request
+  // instead, and the token is fetched from the ledger by an operator surface.
+  // Asserting both halves here keeps this test honest about which contract it
+  // depends on: the token must be absent from the reason, and present in the row.
+  assert.ok(!/token="?[0-9a-f]{8,}/.test(String(first.reason || '')),
+    `the deny reason must not carry the override token: ${first.reason}`);
+  const pending = ch.listPendingConfirmations({ session_id: sid })
+    .filter(r => r.status === 'pending');
+  assert.strictEqual(pending.length, 1, 'the PAUSE minted exactly one pending confirmation');
+  assert.ok(new RegExp(`#${pending[0].id}\\b`).test(String(first.reason || '')),
+    `the deny reason names the request handle #${pending[0].id}: ${first.reason}`);
+  assert.strictEqual(ch.approveConfirmation({ token: pending[0].token, origin: 'test' }).ok, true);
 
   const retry = runGate(bash(sid, command), { env: { T2HELIX_CLASSIFY_BUDGET_MS: '-1' } });
   assert.ok(!retry.cleared, 'an approved token cleared a call that was never evaluated');

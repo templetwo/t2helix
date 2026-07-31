@@ -43,7 +43,7 @@ The chronicle does not care which model writes or recalls. Equal status by desig
 | Class | Non-hook seats (Cosmic / direct Grok) | Claude Code PreToolUse |
 |-------|----------------------------------------|-------------------------|
 | **WITNESS** | Hard deny (blocked, not recorded as success) | Hard deny |
-| **PAUSE** | Soft deny: mints `pending_confirmations` token; caller must `confirm_pending` then retry (adapter consumes approval) | Soft deny + token in hook reason |
+| **PAUSE** | Soft deny: mints `pending_confirmations` token; caller must `confirm_pending` then retry (adapter consumes approval) | Soft deny; the hook reason names the request id, and the token is found via `list_pending` |
 | **OPEN** | Record + proceed | Proceed |
 
 **History:** Through mid-2026-07, PAUSE was *logged* but treated as OPEN for Grok direct calls (`if (classification !== 'WITNESS') record`). That half-gate is closed so non-hook seats do not inherit a "safe mode that never reads the flag."

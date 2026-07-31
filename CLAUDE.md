@@ -126,9 +126,14 @@ ship explicit-only, measure the generated-vs-promoted ratio first.
 Under `defaultMode: bypassPermissions`, Claude Code silently overrides
 `permissionDecision: ask`, so PAUSE cannot use `ask` and still mean anything. Instead
 PreToolUse returns `deny` and mints a `pending_confirmations` row keyed by
-`(session_id, sha256(action_summary))`, surfacing the token in the deny reason. To
-proceed: call `mcp__t2helix__confirm_pending` with the token, then **retry the identical
-action within 10 minutes**. The retry finds the approval, consumes it atomically
+`(session_id, sha256(action_summary))`, naming that request by **id** in the deny reason.
+The token is not in the deny reason — that string is read by the party being denied, and
+a gate does not hand over the credential that lifts it. To proceed: find the request with
+`list_pending`, call `mcp__t2helix__confirm_pending` with its token, then **retry the
+identical action within 10 minutes**. Approvals record where they came from
+(`approved_origin`, `approved_tty`), and the retry's `compass_log` row carries
+`user_override: "token:<id> origin=<origin>"`, so an approval that arrived over the
+model-facing MCP surface is legible as one. The retry consumes the approval atomically
 (`consumeApproval` is a compare-and-swap `status='approved' → 'used'`, so a token can
 never be double-spent across racing hook processes), and re-logs the call as `OPEN`.
 

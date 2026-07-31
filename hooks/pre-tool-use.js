@@ -341,7 +341,11 @@ async function main() {
             classification: 'OPEN',
             rule_matched: result.rule_id,
             reason: 'approved via single-use override token (consumed)',
-            user_override: String(approval.id),
+            // Space, not a colon, between the two fields: `token:<id>:origin=…`
+            // satisfies secrets.js's own assignment pattern, so the audit value
+            // reads as credential-shaped to this project's scrubber and comes
+            // back [REDACTED] — losing the origin it exists to carry.
+            user_override: `token:${approval.id} origin=${approval.approved_origin || 'unattributed'}`,
             normalized_action_hash: semanticHash,
             parser_version: parserVersion,
             message_version: MESSAGE_VERSION,
@@ -355,8 +359,10 @@ async function main() {
     } catch (_) {}
   }
 
-  // No approval (or WITNESS): deny.
+  // No approval (or WITNESS): deny. The token stays here — the deny reason is
+  // model-visible, so it carries the request handle and never the credential.
   let token = null;
+  let pendingId = null;
   if (result.classification === 'PAUSE' && session_id) {
     try {
       const pending = createPendingConfirmation({
@@ -368,6 +374,7 @@ async function main() {
         parser_version: parserVersion
       });
       token = pending.token;
+      pendingId = pending.id;
     } catch (_) {}
   }
 
@@ -377,6 +384,7 @@ async function main() {
   const rendered = renderDecision(result, {
     action_summary: display_summary.replace(/^[^:]+:\s*/, ''),
     token,
+    pending_id: pendingId,
     safer_path: saferPathFor(result.rule_id),
     offer_lease: false
   });
