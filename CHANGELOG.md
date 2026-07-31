@@ -165,15 +165,52 @@ Upgrading is additive at the schema level (new columns, one new table) and is a
 - **`git reset --hard` is caught wherever the flag sits.** The rule walked from the
   subcommand straight to the flag; it now walks intervening tokens, so
   `git reset HEAD~1 --hard` is gated like the adjacent spelling.
-- **`lib/secrets.js`'s url-auth pattern was quadratic.** `[a-z][a-z0-9+.-]*://`
-  restarted at every character of a long alphanumeric run and scanned to the end
-  looking for `://` — 4,772ms on `echo ` + 100,000 a's, 17,683ms at 200,000, paid
-  once by the legacy credential rule and again by the semantic leg, which alone
-  was enough to run the hook past its 5,000ms budget. Anchored with a `(?<![a-z])`
-  scheme-start lookbehind: a performance anchor, not a semantic narrowing, proved
-  test-equivalent by enumeration (423,654 inputs, 0 divergences) and compared on
-  capture groups rather than hit/miss so the detector-implies-redactor invariant is
-  untouched.
+- **`lib/secrets.js`'s url-auth pattern was quadratic, and the first fix only
+  covered half of it.** `[a-z][a-z0-9+.-]*://` restarted at every character of a
+  long alphanumeric run and scanned to the end looking for a `://` that was not
+  there — 4,772ms on `echo ` + 100,000 a's, 17,683ms at 200,000, paid once by the
+  legacy credential rule and again by the semantic leg, which alone was enough to
+  run the hook past its 5,000ms budget.
+
+  A `(?<![a-z])` scheme-start lookbehind was landed first. **It fixes the
+  letters-only case and nothing else**, because a DIGIT is not `[a-z]`: every
+  position following a digit still passes the lookbehind and still starts a fresh
+  scan to the end of the run. On a random letter+digit run that is ~n/2 restarts,
+  so the pattern stayed quadratic on exactly the inputs a hex dump or an
+  alphanumeric ID stream produces. The earlier entry credited that anchor with
+  fixing the quadratic; it did not, and the suites could not see the gap because
+  every pad they swept was periodic. Measured at 200,000 chars with only the
+  lookbehind in place: hex 4,387ms, `[a-z0-9]` 3,627ms, `[A-Za-z0-9]` 2,234ms,
+  against base64url 4.4ms, letters-only 2.2ms and `'a'.repeat(n)` 1.5ms.
+
+  The pattern is now anchored on the literal `://` with the scheme verified behind
+  it (`://(?<=(?<![a-z])[a-z][a-z0-9+.-]*://)…`), so the number of match attempts
+  that do real work is the number of `://` occurrences rather than the number of
+  digits. Same shapes at 200,000: **4,387ms → 0.6ms, 3,627ms → 1.2ms, 2,234ms →
+  1.2ms**; at 400,000, **15,949ms → 1.2ms**. Full before/after in "No worse than
+  fe8aa0c" below.
+
+  **Equivalence was proved on capture groups and redactor output, not on
+  `test()` hit/miss**, because this table does double duty: `DETECTION_REGEX`
+  classifies for the compass rule while the same `src` compiles into `REDACTORS`,
+  which is what actually masks secrets on the chronicle write path — so a
+  detection change that silently stopped masking would be worse than the stall it
+  fixed. **4,489,568 inputs** (a 4.0M structured cross-product over every part of
+  the grammar, 53 named adversarial cases, exhaustive enumeration of every string
+  of length ≤ 5 over `a1:/@.Z`, 400K randomised fuzz, 60K strings carrying 2–12
+  url-auth spans each, and 84 inputs of 10K–100K chars), **0 divergences** in
+  `DETECTION_REGEX.test()`, in group-1 span value AND index, in `redactSecrets()`
+  and in `scrub()`. The harness was negative-controlled: the plausible-looking
+  alternative `(?<![a-z0-9+.-])[a-z]…` is rejected by it with **74,564
+  divergences**, all of the detection-loss shape (`1abc://u:pass@h` matches today
+  and would stop matching — a secret that stops being masked). Every consumer of
+  `DETECTION_REGEX` was checked: `lib/compass.js` (`PATTERN_SOURCES.secrets`) and
+  the five call sites in `lib/compass-semantic.js` all use `.test()`, so hit/miss
+  governs there; `lib/chronicle.js` (×12), `lib/manifest.js` and
+  `scripts/redact-sweep.js` reach it through `redactSecrets`/`scrub`, which is the
+  surface the byte-identity assertion covers. `match[0]` IS shorter now — it no
+  longer spans the scheme — which is safe because `group: 1` masking re-emits
+  everything outside the captured span verbatim.
 - **`scripts/replay-compass.js`** reconstructed any non-Bash tool call as
   `{raw: …}`, so every capability-gated deny replayed as `OPEN` and was reported
   as a softening. It now parses the stored envelope, and counts a row whose
@@ -260,7 +297,11 @@ reaches a decision and this tree is killed emitting nothing; base writes an audi
 row and this tree writes none; base clears a benign command and this tree denies
 it.
 
-Two cells failed that bar and are now closed.
+Three things failed that bar and are now closed — and the third was found only
+after the first sweep had already certified the tree, by a grid that swept a
+payload shape the suites did not generate. The order matters: the receipt came
+first and was wrong, because a cost suite can only ever certify the shapes it
+knows how to build.
 
 - **`deploy-prod` was quadratic in the number of trigger words in a segment.**
   Each `kubectl|terraform|helm|aws|gcloud` occurrence re-ran three segment-wide
@@ -294,12 +335,131 @@ Two cells failed that bar and are now closed.
   REPLACE the bundled set) cannot turn the shell gate off on the one tool it has
   always covered. Pinned by a fixture.
 
-Receipts: a 420-cell hook-level sweep (12 payload shapes × 7 sizes from 20KB to
-800KB × 5 carriers — Bash, `mcp__shell__run`, `Terminal`, a future MCP tool name,
-and the Grok envelope), fe8aa0c vs this tree: **0 cells worse, 409 identical, 11
-strictly better** (all Bash cells where fe8aa0c was killed and this tree now
-clears in ~150ms). The full exploit set re-runs at 51/51 closed here against 36
-open on fe8aa0c.
+- **`credential-paste` was quadratic on any unbroken letter+digit run, and both
+  cost suites were structurally incapable of seeing it.** The pattern itself is
+  described under `lib/secrets.js` above. What made it a RELEASE-GATE failure
+  rather than a slow regex is that the credential rule is
+  `pattern_source: "secrets"` and capability-routed, so the cost landed on
+  `mcp__shell__run`, `Terminal`, `mcp__future__exec` and the Grok envelope —
+  carriers fe8aa0c waved through in ~58ms without reading them at all. An
+  independent 630-cell grid found **five cells worse than fe8aa0c**, every one of
+  them a random letter+digit payload:
+
+  | shape | size | carrier | fe8aa0c | before the fix | audit rows |
+  |---|---|---|---|---|---|
+  | b64-random | 400K | Grok | ALLOW 62ms | DENY 2,620ms | 1 → 1 |
+  | b64-random | 800K | `mcp__shell__run` | ALLOW 64ms | KILLED 5,004ms | 1 → 0 |
+  | b64-random | 800K | Terminal | ALLOW 58ms | KILLED 5,004ms | 1 → 0 |
+  | b64-random | 800K | `mcp__future__exec` | ALLOW 58ms | KILLED 5,004ms | 1 → 0 |
+  | b64-random | 800K | Grok | ALLOW 59ms | KILLED 5,002ms | 1 → 0 |
+
+  The four 800K cells are the worst sub-severity in the matrix: the call proceeds
+  either way, so it is security-equivalent, but the hook is SIGKILLed, emits
+  nothing, and the `compass_log` row fe8aa0c wrote is **lost** (1 → 0). On **Bash**
+  this cost is PRE-EXISTING rather than new — fe8aa0c took 73,316ms at 200KB and
+  both trees are killed at 800KB — so linearising it is a net win beyond closing
+  the regression. Measured at the hook after the fix, 800KB on Bash:
+  fe8aa0c KILLED at 5,018ms, this tree ALLOW in 606ms.
+
+- **THE TEST BLIND SPOT, which is the more important half.** Every pad both cost
+  suites built was PERIODIC. `test/compass-fail-closed.js` `padShapes()` derives
+  each pad from the rule's own trigger and tail — for `credential-paste` the seed
+  is `{trigger:'password=', tail:'hunter2hunter2'}` — and `'a'.repeat(n)` measures
+  ~2ms against this regex. `test/compass-no-worse-than-base.js` `BENIGN_SHAPES`
+  was the same: `base64-blob` is a repeated 52-char token, `lowercase-run` a
+  repeated 26-char cycle. So the fail-closed file's own `[note]` line printed a
+  slowest-rule list that did **not** name `credential-paste`, while that rule cost
+  2,276–4,095ms at the same size on an aperiodic pad. **A suite that cannot fail
+  on the shape that matters is not evidence, and the "0 cells worse" receipt this
+  paragraph used to carry was exactly that.**
+
+  Both suites now draw from `test/fixtures/aperiodic-pad.js` — deterministic,
+  prefix-stable, rejection-sampled aperiodic runs over hex, `[a-z0-9]` and
+  `[A-Za-z0-9]`. The keystream is sha256 in counter mode ON PURPOSE: the probe
+  that first found this bug used an LCG, whose low-order bits have a short period
+  modulo a power-of-two alphabet, and it silently produced a PERIODIC "hex" pad
+  that measured 1.8ms and reported the bug ABSENT. The instrument was the first
+  thing wrong, which is the whole lesson. The pads are verified prefix-stable and
+  **non-matching against every loaded rule at every size to 800,000**, so they
+  measure the cost of FAILING to match — the cost the exploit actually buys.
+
+  Failing-first, captured on a tree whose `lib/secrets.js` is byte-identical to
+  the shipped one: fail-closed named `credential-paste/aperiodic-hex 4,423ms`,
+  `/aperiodic-alnum36 3,828ms`, `/aperiodic-alnum62 2,578ms` at 200,000b against a
+  250ms per-rule ceiling, and the no-worse cost matrix produced **96 violations**
+  across all three aperiodic shapes and four newly-routed carriers at 80K–200K,
+  from 2,505ms to **33,265ms** against a 1,000ms ceiling and a 5,000ms hook
+  budget, every one of them also reporting `OPEN but Bash says NOT_EVALUATED`.
+  After the fix the per-rule ceiling note no longer names `credential-paste` at
+  all, and the whole-gate arm's offender count drops from **34 cells to 4** — the
+  4 survivors being periodic shapes dominated by the pre-existing
+  `t2helix-protect-chronicle-db` operator rule, which fails on BOTH trees.
+
+Receipts: **the previous "420-cell sweep, 0 cells worse" receipt was accurate for
+the shapes it swept and blind to the shape that mattered** — all 12 of its payload
+shapes were periodic, which is why it certified a tree with five worse cells in
+it. It is superseded by an **840-cell** hook-level sweep (24 payload shapes × 7
+sizes from 20KB to 800KB × 5 carriers — Bash, `mcp__shell__run`, `Terminal`, a
+future MCP tool name, and the Grok envelope), fe8aa0c vs this tree, run through
+the REAL hook process with the REAL 5,000ms PreToolUse budget and a fresh data dir
+per cell. It carries the original 12 shapes verbatim (including that grid's
+`b64()` generator byte-for-byte, so the five reported cells reproduce on this
+instrument), plus three aperiodic letter+digit runs and three shapes built to be
+adversarial to the NEW pattern specifically. Empty stdout or a nonzero exit is
+scored HARNESS-ERROR, never ALLOW — scoring a silent hook as a clearance is the
+fail-open that manufactured a dozen phantom "41ms ALLOW" cells in an earlier
+round.
+
+Result: **840 cells — 781 identical, 58 strictly better, 0 HARNESS-ERROR, and 0
+worse that survive re-confirmation.** The 58 are all Bash cells where fe8aa0c was
+SIGKILLed at ~5,005ms and wrote NO audit row, and this tree now decides in
+300–1,100ms and writes one (`0 → 1` rows): `b64-random` at every size from 20KB,
+`json-blob` from 80KB, the three `aperiodic-*` runs, `dotted-run-sep`,
+`run-sep-pairs`, and the `deploy-*` shapes. The three shapes built to be
+adversarial to the NEW pattern behave: `dotted-run-sep` (a run kept class-legal
+by `.`/`-`/`+` then many `://`) is 2,085ms/8,405ms on the old pattern at
+200K/400K and 0.7ms/1.4ms here, and `colon-dense` is ALLOW on both trees at every
+size, confirming the tail `[^/\s:@]+:([^/\s@]{3,})@` is not a second quadratic —
+every `://` root contains a `/`, which is excluded from the tail class and stops
+its scan.
+
+**One cell was flagged and did not survive re-confirmation, and saying so is the
+point.** `quote-churn` at 400KB on Bash came back `base=ALLOW(4,032ms)` vs
+`new=DENY(4,014ms)` — an apparent availability regression at IDENTICAL cost,
+which is already the signature of a threshold rather than a slowdown. Re-run five
+times per tree, that cell is NON-DETERMINISTIC ON BOTH: base was KILLED in 4 of 5
+runs and ALLOWed once; this tree was KILLED 3 and DENYed 2. It sits exactly on the
+5,000ms budget line (200KB: both ALLOW at ~1.5s; 800KB: both KILLED), its dominant
+term is the PRE-EXISTING `classifySemantic` cost on that shape, and the shape is
+periodic — unrelated to the letter+digit class this fix addresses. The single
+grid sample happened to draw base's one-in-five ALLOW. **A one-sample-per-cell
+grid cannot adjudicate a cell on the budget boundary; that is a property of the
+instrument, not of the tree**, which is why every flagged cell is re-run before it
+is believed. These runs were taken on a machine under heavy external load, which
+widens that boundary band considerably.
+
+The full exploit set re-runs **91/91 closed, 0 reopened, 0 new false positives**,
+against 67 cases that were open or ungated on fe8aa0c. The suite is
+**19 files, 611 assertions, 0 failed, every file at real exit 0**.
+
+**A note on measuring any of this on a busy machine, because it changed two
+verdicts and both times the instrument was the thing at fault.** These runs
+overlapped a game holding ~5.75 of 14 cores. Under that load the SAME code on the
+SAME input measured 4,387ms and 22,748ms an hour apart, so any table pairing an
+old number from one run with a new number from another is measuring the GPU, not
+the regex — every before/after figure quoted here is therefore an INTERLEAVED
+pair, both halves timed adjacently in one process on the identical input. Under
+that load the suite also reported one failure per run, in a DIFFERENT test each
+time (`deploy-prod: cost grows linearly`, a ratio assertion on a 1ms baseline
+that read 8.7x and 10.0x; then `whole gate 5,291ms > 3,000ms` on
+`quote-churn/800000`). Failures that move between runs are flake, not
+regression — and the attribution is direct: `quote-churn` at 800KB through the
+whole gate measures **2,818ms un-linearised vs 2,857ms linearised**, `OPEN` on
+both, i.e. this change does not touch it; its cost is the pre-existing
+`classifySemantic` term already recorded above, and it simply sits near the
+ceiling. Re-run once the machine was idle, that cell reads **1,272ms** (matching
+the 1,216ms recorded for fe8aa0c) and the suite is green. The numbers above are
+the idle-machine ones.
 
 **R4 — prose in a `command`/`script` field.** On the newly-routed carriers, prose
 containing a trigger phrase now denies where fe8aa0c was OPEN. This is parity, not
@@ -331,6 +491,22 @@ that a payload under any field name no shell tool executes is not routed at all
   is left as-is deliberately: it is the concrete instance of the population the
   budgets exist for, an operator regex `lib/compass` has never seen. (`deploy-prod`
   was on this list and is no longer — see "No worse than fe8aa0c" below.)
+
+  **It also dominates the whole-gate cost arm whenever the repo policy is
+  loaded, and WHETHER IT IS LOADED DEPENDS ON HOW THE SUITE IS INVOKED.**
+  `npm test` does not set `T2HELIX_POLICY_DIR`, so `lib/compass` walks up from
+  `cwd`, finds this repo's own `.t2helix/policy.json`, and compiles that rule —
+  ten rules in force. A runner that blanks `T2HELIX_POLICY_DIR` gets nine and a
+  materially different cost profile. The two configurations are not
+  interchangeable and a before/after measured across them is not a comparison:
+  with the policy loaded, `test/compass-fail-closed.js`'s
+  `the WHOLE gate (both legs) stays in budget` arm is dominated by this rule and
+  can exceed its 3,000ms ceiling on a loaded machine, on THIS tree and on
+  fe8aa0c alike. Measured back-to-back under identical load, that arm reports
+  **34 offending cells before the credential-paste linearisation and 4 after**,
+  the 4 survivors all periodic shapes with this operator rule as the dominant
+  term. So the arm is a real signal about the operator rule and a contention
+  amplifier, not a regression indicator for this change.
 - **On a carrier fe8aa0c never gated, an operator's slow rule buys a decline, not
   a deny.** The capability parity floor clears such a call when the capability
   budget runs out, so a sufficiently expensive `.t2helix/policy.json` regex can

@@ -49,6 +49,7 @@ process.env.T2HELIX_POLICY_DIR = ''; // bundled rules only unless an arm says ot
 const compass = require('../lib/compass');
 const { classifyV2 } = require('../lib/compass-v2');
 const matcher = require('../lib/rules/deploy-prod-matcher');
+const APERIODIC = require('./fixtures/aperiodic-pad');
 
 let passed = 0;
 let failed = 0;
@@ -208,7 +209,24 @@ const BENIGN_SHAPES = {
   'long-flag-churn': n => 'echo ' + pad('--force-with-lease --recursive --verbose ', n),
   // The shape that produced every regression cell in the matrix above.
   'repeated-deploy-trigger': n => pad('kubectl apply x ', n),
-  'repeated-trigger-blocked-target': n => pad('kubectl apply x ', n) + '|' + PROD
+  'repeated-trigger-blocked-target': n => pad('kubectl apply x ', n) + '|' + PROD,
+  // ── APERIODIC letter+digit runs ──────────────────────────────────────────
+  //
+  // Every shape above is PERIODIC: `base64-blob` repeats one 52-char token,
+  // `lowercase-run` a 26-char cycle, the rest a word or a flag. All of them
+  // measure ~2ms against lib/secrets.DETECTION_REGEX, which is why the first
+  // "420 cells, 0 worse" receipt from this file was accurate for what it swept
+  // and blind to the shape that mattered. An independent 630-cell grid then
+  // found five cells WORSE than fe8aa0c, every one of them a random letter+digit
+  // run: ALLOW/62ms on base became DENY/2,620ms at 400K and a 5,004ms SIGKILL at
+  // 800K that emitted nothing and LOST the audit row (1 -> 0).
+  //
+  // Hex dumps and alphanumeric ID streams are ordinary shell payloads
+  // (`openssl rand -hex`, concatenated sha256s, `xxd -p`), so this is a benign
+  // shape and belongs in this list rather than in the exploit set.
+  'aperiodic-hex-run': n => 'echo ' + APERIODIC.hexRun(n),
+  'aperiodic-alnum-run': n => 'echo ' + APERIODIC.alnum36Run(n),
+  'aperiodic-mixedcase-run': n => 'echo ' + APERIODIC.alnum62Run(n)
 };
 
 const SIZES = [20000, 80000, 150000, 180000, 200000, 400000, 800000];

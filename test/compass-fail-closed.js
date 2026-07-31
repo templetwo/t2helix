@@ -37,6 +37,7 @@ process.env.T2HELIX_DATA_DIR = tmpDir;
 const ch = require('../lib/chronicle');
 const compass = require('../lib/compass');
 const { classifyV2 } = require('../lib/compass-v2');
+const APERIODIC = require('./fixtures/aperiodic-pad');
 
 // The hook budget declared in hooks/hooks.json — the number the exploit targets.
 const HOOK_BUDGET_MS = JSON.parse(
@@ -301,7 +302,25 @@ function padShapes({ trigger, tail }, n) {
     // be a linearisation, not a presence check. Every trigger in the run still
     // has to be considered and every one still fails, so this is the worst case
     // for a rule that restarts on each occurrence.
-    'blocked-tail': trigger.repeat(Math.max(1, Math.floor(n / trigger.length))) + '|' + tail
+    'blocked-tail': trigger.repeat(Math.max(1, Math.floor(n / trigger.length))) + '|' + tail,
+    // ── APERIODIC. The axis every shape above is structurally blind to. ──
+    //
+    // The five shapes above are all PERIODIC: they repeat the rule's own
+    // trigger, a space, or `'a'`. Against a pattern that restarts inside an
+    // unbroken run they measure ~2ms and report "no rule is superlinear".
+    // credential-paste cost 2,276-4,095ms at this same 200,000-char size on an
+    // aperiodic letter+digit run while this file's own `[note]` line named it
+    // nowhere — which is how the merged tree shipped five cells WORSE than
+    // fe8aa0c (four of them a 5,004ms SIGKILL that lost the audit row).
+    //
+    // These three carry NO trigger, deliberately. The cost they measure is a
+    // rule failing on an unbroken run, which does not depend on the rule's own
+    // vocabulary, so one shape covers every rule. They are also verified
+    // non-matching against the bundled patterns at every size up to 800,000, so
+    // they measure the cost of FAILING — the same contract as the shapes above.
+    'aperiodic-hex': APERIODIC.hexRun(n),
+    'aperiodic-alnum36': APERIODIC.alnum36Run(n),
+    'aperiodic-alnum62': APERIODIC.alnum62Run(n)
   };
 }
 
