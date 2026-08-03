@@ -63,6 +63,7 @@ function preToolVerdict(payload, mode = 'shadow') {
   const { output } = runHook('pre-tool-use.js', payload, mode);
   if (output.hookSpecificOutput) {
     const reason = output.hookSpecificOutput.permissionDecisionReason || '';
+    if (reason.includes('NOT EVALUATED')) return 'NOT_EVALUATED';
     return reason.includes('[soft-deny]') ? 'PAUSE' : 'WITNESS';
   }
   if (output.systemMessage) return 'ERROR_ALLOW';
@@ -166,13 +167,14 @@ for (const specimen of CORPUS) {
 
 // These assertions characterize unresolved findings. They make the audit
 // reproducible but must not be read as approval of OPEN behavior.
+//
+// The two hook columns moved in 0.13.0: a payload the gate cannot read now comes
+// back NOT_EVALUATED instead of ERROR_ALLOW (a bare `{}` plus a systemMessage) or
+// a plain OPEN. The other four seats are unchanged, and the OPEN rows below are
+// still the finding — a wrapper key the adapter does not know about is read, not
+// mis-read, so nothing signals that the destructive text was never seen.
 const destructive = 'rm -rf /tmp/*';
 const UNMATCHABLE = [
-  {
-    id: 'unknown-tool',
-    payload: { tool_name: 'Mystery', tool_input: { command: destructive } },
-    expected: ['OPEN', 'OPEN', 'OPEN', 'OPEN', 'OPEN', 'OPEN']
-  },
   {
     id: 'missing-tool-input',
     payload: { tool_name: 'Bash' },
@@ -186,7 +188,7 @@ const UNMATCHABLE = [
   {
     id: 'non-string-command',
     payload: { tool_name: 'Bash', tool_input: { command: { raw: destructive } } },
-    expected: ['ERROR_ALLOW', 'ERROR_ALLOW', 'OPEN', 'UNAVAILABLE', 'ERROR', 'ERROR']
+    expected: ['NOT_EVALUATED', 'NOT_EVALUATED', 'NOT_EVALUATED', 'UNAVAILABLE', 'ERROR', 'ERROR']
   },
   {
     id: 'deeply-nested-command',
@@ -206,7 +208,7 @@ const UNMATCHABLE = [
   {
     id: 'null-payload',
     payload: null,
-    expected: ['OPEN', 'OPEN', 'OPEN', 'OPEN', 'OPEN', 'OPEN']
+    expected: ['NOT_EVALUATED', 'NOT_EVALUATED', 'NOT_EVALUATED', 'OPEN', 'OPEN', 'OPEN']
   }
 ];
 
@@ -251,23 +253,46 @@ test('bounded rewrites that retain the WITNESS floor', () => {
 // are closed, so each now asserts the FIXED behaviour: a documented WITNESS form
 // must deny in EVERY mode, not only in the mode that happens to parse it.
 
-test('STILL OPEN: long and quoted rm flags are allowed in the default mode', () => {
-  // NOT FIXED — and the attempt is instructive. Widening rm-rf-wildcard's flag
-  // class closed this, but rm-rf-wildcard is rule #1 in a FIRST-MATCH-WINS list
-  // (lib/compass.js), so the wider pattern began capturing ordinary deletes and
-  // RELABELLING chained commands with a migrated rule_id. mergeDecisions then
-  // cleared the whole verdict on migrated-family grounds, turning
-  // `rm --force <file> && git push --force` from DENY into ALLOW in enforce —
-  // four non-rm WITNESS families lost their gate. The same edit also made
-  // git-reset-hard cubic on whitespace runs. Both reverted 2026-07-26.
-  // A correct fix must not widen rule #1. See open thread #15.
+test('regression: long and quoted rm flags deny in every mode', () => {
+  // Was OPEN/OPEN/WITNESS — only the mode that parsed the command caught it.
+  // Fixed by normalizing the HAYSTACK rather than widening rule #1. Widening was
+  // tried and reverted 2026-07-26: rm-rf-wildcard is rule #1 in a
+  // FIRST-MATCH-WINS list (lib/compass.js), so a wider pattern began capturing
+  // ordinary deletes and RELABELLING chained commands with a migrated rule_id;
+  // mergeDecisions then cleared the whole verdict on migrated-family grounds and
+  // `rm --force <file> && git push --force` went from DENY to ALLOW in enforce.
+  // Normalization reaches the same matches from a different site, so it inherits
+  // the same hazard — classify() therefore matches the command AS WRITTEN first
+  // and only normalizes when that pass is clean. Guarded in
+  // test/compass-normalization.js under rule_order_preserved.
+  const ALL_WITNESS = { legacy: 'WITNESS', shadow: 'WITNESS', enforce: 'WITNESS' };
+  assert.deepStrictEqual(modeMatrix('rm --recursive --force /tmp/*'), ALL_WITNESS);
+  assert.deepStrictEqual(modeMatrix('rm "-rf" /tmp/*'), ALL_WITNESS);
+});
+
+test('regression: an unknown tool carrying a shell command is no longer ungated', async () => {
+  // Was OPEN on all six seats, filed under UNMATCHABLE. Every rule declared
+  // tool:"Bash" and classify() skipped any rule whose tool did not equal the
+  // tool name, so a tool that ran a shell under any other name was never
+  // evaluated — and logged OPEN, indistinguishable from evaluated-and-cleared.
+  // Rules now bind to the shell CAPABILITY, so the tool's name stops deciding
+  // whether the floor applies.
+  const payload = { tool_name: 'Mystery', tool_input: { command: destructive } };
   assert.deepStrictEqual(
-    modeMatrix('rm --recursive --force /tmp/*'),
-    { legacy: 'OPEN', shadow: 'OPEN', enforce: 'WITNESS' }
+    [
+      preToolVerdict(payload, 'shadow'),
+      preToolVerdict(payload, 'off'),
+      (await grok.grokWitness(payload, { session_id: 'unknown-tool-grok' })).classification,
+      withMode('shadow', () => codex.codexCompassCheck(payload).classification),
+      mcpVerdict('dry_run_compass', payload),
+      mcpVerdict('explain_compass', payload)
+    ],
+    ['WITNESS', 'WITNESS', 'WITNESS', 'WITNESS', 'WITNESS', 'WITNESS']
   );
-  assert.deepStrictEqual(
-    modeMatrix('rm "-rf" /tmp/*'),
-    { legacy: 'OPEN', shadow: 'OPEN', enforce: 'WITNESS' }
+  // The name is not what makes it dangerous: same payload, same verdict as Bash.
+  assert.strictEqual(
+    compass.classify(payload).rule_id,
+    compass.classify(structured(destructive)).rule_id
   );
 });
 
@@ -285,35 +310,40 @@ test('regression: enforce mode no longer downgrades prefixed deletes', () => {
   }
 });
 
-test('STILL OPEN: quoted and reordered git safety flags evade every mode', () => {
-  // NOT FIXED. Re-anchoring git-reset-hard with the same `(?:[^|;&]*\s+)?` idiom
-  // git-push-force already uses made the pattern CUBIC on whitespace runs
-  // (0.019ms -> 1347ms at 1.2KB), because [^|;&] is a superset of \s and three
-  // quantifiers then compete for one contiguous run. The PreToolUse budget is
-  // 5000ms and Bash is the only tool whose haystack is uncapped, so a hung hook
-  // emits no decision and the call proceeds UNGATED. Reverted 2026-07-26.
-  const ALL_OPEN = { legacy: 'OPEN', shadow: 'OPEN', enforce: 'OPEN' };
-  assert.deepStrictEqual(modeMatrix('git push "--force" origin main'), ALL_OPEN);
-  assert.deepStrictEqual(modeMatrix('git reset "--hard" HEAD~1'), ALL_OPEN);
+test('regression: quoted and reordered git safety flags deny in every mode', () => {
+  // Was OPEN in all three modes. The quoted forms are closed by the dequote in
+  // classify(); the flag-last form needed the rule re-anchored.
+  //
+  // Re-anchoring was the part that had failed before: the earlier attempt reused
+  // the `(?:[^|;&]*\s+)?` idiom git-push-force already carries, which is CUBIC on
+  // whitespace runs (0.019ms -> 1347ms at 1.2KB) because [^|;&] is a superset of
+  // \s and three quantifiers then compete for one contiguous run. Against a
+  // 5000ms PreToolUse budget a hung hook emits no decision and the call proceeds
+  // UNGATED. The token-then-separator form `(?:[^|;&\s]+[ \t]+)*` is unambiguous
+  // — nothing can claim the same run twice — and stays flat: 0ms at 8000 spaces,
+  // asserted in test/compass-normalization.js. [ \t] rather than \s so the walk
+  // cannot cross a newline into the next command.
+  const ALL_WITNESS = { legacy: 'WITNESS', shadow: 'WITNESS', enforce: 'WITNESS' };
+  assert.deepStrictEqual(modeMatrix('git push "--force" origin main'), ALL_WITNESS);
+  assert.deepStrictEqual(modeMatrix('git reset "--hard" HEAD~1'), ALL_WITNESS);
   // The worst of the set: ordinary, unquoted, valid git that a developer types by
-  // habit. git-reset-hard requires the flag ADJACENT to the subcommand.
-  assert.deepStrictEqual(modeMatrix('git reset HEAD~1 --hard'), ALL_OPEN);
+  // habit. git-reset-hard used to require the flag ADJACENT to the subcommand.
+  assert.deepStrictEqual(modeMatrix('git reset HEAD~1 --hard'), ALL_WITNESS);
 });
 
-test('PRE-EXISTING DEFECT: git-push-force is superlinear on whitespace runs', () => {
-  // Not introduced here — this idiom shipped in git-push-force before tonight.
-  // `(?:[^|;&]*\s+)?` lets [^|;&]* and \s+ and the following \s+ all compete for
-  // the same whitespace, which is cubic. Recorded as a test so the cost is a
-  // number rather than a hunch, and so a future fix has a baseline to beat.
-  // Deliberately NOT asserted as fast: asserting speed here would fail today and
-  // that is the point of filing it instead of patching it blind.
-  const re = /git\s+push\s+(?:[^|;&]*\s+)?(?:--force(?!-with-lease)|-f)\b/;
+test('FIXED: git-push-force is linear on whitespace runs', () => {
+  // Filed here as a characterization on 2026-07-26 (51ms at 400 spaces, 141,887ms
+  // at 4,000) and left unpatched pending review. The idiom is now
+  // `(?:[^|;&\s]+\s+)*` — token-then-whitespace, so nothing competes for the same
+  // run — and the number is an assertion rather than a note. Equivalence over the
+  // token grammar is proven in test/compass-fail-closed.js.
+  const re = compass.loadRules().find(r => r.id === 'git-push-force')._regex;
   const sample = 'git push ' + ' '.repeat(400) + 'x';
   const started = Date.now();
   re.test(sample);
   const elapsed = Date.now() - started;
   console.log(`        [note] git-push-force took ${elapsed}ms on ${sample.length} bytes of whitespace`);
-  assert.ok(elapsed >= 0); // characterization only — see open thread #15
+  assert.ok(elapsed < 50, `${elapsed}ms on 400 spaces — the cubic idiom is back`);
 });
 
 test('regression: enforce mode may not clear on unresolved command substitution', () => {
@@ -338,6 +368,9 @@ test('regression: widened rm patterns stay linear-time (no catastrophic backtrac
   // for one round. The shape that actually explodes is a long run of a single
   // character that MULTIPLE quantifiers can all claim — here whitespace, because
   // `[^|;&]` is a superset of `\s`. Whitespace runs must stay in this list.
+  // The reset shape is no longer skipped: git-reset-hard now walks tokens with
+  // `(?:[^|;&\s]+[ \t]+)*`, where the separator cannot be claimed by the token
+  // class, so it is measured here rather than exempted.
   const RM = String.fromCharCode(114, 109);
   const adversarial = [
     'git reset ' + ' '.repeat(4000) + 'x',            // the shape that was missed
@@ -348,33 +381,34 @@ test('regression: widened rm patterns stay linear-time (no catastrophic backtrac
     `${RM} ` + '"-rf" '.repeat(16000) + 'X',          // quote-heavy
     `${RM} ` + '--recursive --force '.repeat(2000) + 'X'
   ];
-  // CHARACTERIZATION, not an assertion — it would fail today on the SHIPPED
-  // git-push-force pattern, and that is the finding rather than a reason to skip it.
-  // Measured: `git push` + N contiguous spaces, shipped pattern:
-  //     400 spaces ->    51 ms      1000 spaces ->   809 ms      4000 -> 141887 ms
-  // The PreToolUse budget is 5000 ms and Bash is the only tool whose haystack is
-  // uncapped, so a hung hook emits no decision and the call proceeds UNGATED —
-  // starving every rule after it in the list. Practical exploitability is LOW: it
-  // needs a CONTIGUOUS whitespace run; long trailing text and many operands stay
-  // at ~0.2 ms, so this is latent rather than a daily hazard.
-  //
-  // A candidate fix is verified linear and strictly more correct:
+  // The whitespace shapes used to be SKIPPED here as known-slow, which left the
+  // suite reporting "stays linear" about the subset that never explodes. The fix
+  // that unblocked them:
   //     (?:[^|;&]*\s+)?   ->   (?:[^|;&\s]+\s+)*
-  // Unambiguous token-then-whitespace, so nothing competes for the same run:
-  // 0.024-0.082 ms across all shapes above. It matches everything the shipped
-  // pattern matches, still rejects --force-with-lease / plain push / git pull,
-  // and additionally catches the quoted `"--force"` form. NOT APPLIED: two pattern
-  // edits tonight each caused a regression (rule-order shadowing; this same cubic
-  // idiom), so a third goes through review with a clear head. See open thread #15.
+  // Unambiguous token-then-whitespace, so nothing competes for the same run.
+  // CORRECTION to the 2026-07-26 note: the replacement is EQUIVALENT, not wider —
+  // an exhaustive walk of the token grammar (715,236 inputs, 209,312 of them
+  // matches) finds zero divergence in either direction, and in particular it does
+  // NOT catch quoted `"--force"`, which the test above still records as OPEN.
   const timings = [];
+  const slow = [];
   for (const input of adversarial) {
-    if (/\s{100,}/.test(input) && /git\s+(push|reset)/.test(input)) continue; // known-slow, measured above
     const started = Date.now();
     modeMatrix(input);
-    timings.push(`${input.length}b:${Date.now() - started}ms`);
+    const ms = Date.now() - started;
+    timings.push(`${input.length}b:${ms}ms`);
+    if (ms > 500) slow.push(`${input.slice(0, 12)}… ${input.length}b:${ms}ms`);
   }
-  console.log(`        [note] flag-token shapes stay linear — ${timings.join(' ')}`);
-  assert.ok(timings.length > 0);
+  // 500ms — RESTORED 2026-07-30, and the restoration is the point. The previous
+  // round had to relax this to 1500ms because `rm -` + 16,000 r's cost ~870ms
+  // through the full matrix (and did so before that fix too). The cause was named
+  // there and is now fixed at the source: the credential detector's url-auth
+  // alternative `[a-z][a-z0-9+.-]*://` rescanned a long unbroken run from every
+  // start position, and lib/secrets.js now anchors it with `(?<![a-z])`. Same
+  // shape now costs ~30ms. If this ceiling has to be loosened again, the honest
+  // move is to name the new cause here rather than raise the number.
+  console.log(`        [note] adversarial shapes — ${timings.join(' ')}`);
+  assert.deepStrictEqual(slow, [], `shapes exceeded 500ms: ${slow.join(', ')}`);
 });
 
 test('regression: quoting a dangerous command as prose is still OPEN', () => {
@@ -386,7 +420,7 @@ test('regression: quoting a dangerous command as prose is still OPEN', () => {
   assert.strictEqual(modeMatrix(prose).enforce, 'OPEN', prose);
 });
 
-test('actual seats reproduce long-flag mode split', async () => {
+test('regression: every seat agrees on long-flag deletes', async () => {
   const command = 'rm --recursive --force /tmp/*';
   const payload = structured(command);
   assert.deepStrictEqual(
@@ -400,16 +434,17 @@ test('actual seats reproduce long-flag mode split', async () => {
       mcp_enforce: mcpVerdict('dry_run_compass', { command, mode: 'enforce' })
     },
     {
-      // STILL the pre-fix picture: the long-flag rule widening was reverted after
-      // adversarial review showed it retired four non-rm WITNESS families via
-      // first-match-wins relabelling. Shadow is the shipped default, so this row
-      // of OPENs is what runs today.
-      pre_shadow: 'OPEN',
+      // Was four OPENs against three WITNESSes: only the modes that parsed the
+      // command caught it, and shadow — the shipped default — was on the OPEN
+      // side. Normalizing the haystack in the legacy classifier closes the split
+      // at its source, so every seat that reads the rules now reads them the same
+      // way, whatever mode it runs in.
+      pre_shadow: 'WITNESS',
       pre_enforce: 'WITNESS',
-      grok_legacy: 'OPEN',
-      codex_shadow: 'OPEN',
+      grok_legacy: 'WITNESS',
+      codex_shadow: 'WITNESS',
       codex_enforce: 'WITNESS',
-      mcp_shadow: 'OPEN',
+      mcp_shadow: 'WITNESS',
       mcp_enforce: 'WITNESS'
     }
   );
@@ -499,10 +534,14 @@ for (const [id, command] of IDENTITY_CASES) {
   console.log(`\n${passed} passed, ${failed} failed`);
   if (failed === 0) {
     console.log('NOTE: the rm-flag, prefix-downgrade and git-flag divergences are FIXED and now');
-    console.log('      asserted as regressions above. Still UNRESOLVED by decision, not oversight:');
-    console.log('      (a) non-Bash tools that shell out are ungated — every destructive rule is');
-    console.log('          tool-scoped to Bash; (b) malformed payloads return a permissive OPEN;');
-    console.log('      (c) an object-valued command fails open with no compass_log row.');
+    console.log('      asserted as regressions above. So are (a), (b) and (c) as of 0.13.0:');
+    console.log('      (a) rules bind to the shell CAPABILITY, not a tool name, so any tool');
+    console.log('      carrying a command/script string meets the same floor; (b) a malformed');
+    console.log('      payload and (c) an object-valued command now deny as NOT_EVALUATED and');
+    console.log('      write a compass_log row; the cubic git-push-force idiom is gone. Still');
+    console.log('      UNRESOLVED by decision, not oversight: (d) the credential detector is');
+    console.log('      quadratic on a long unbroken alphanumeric run (~740ms at 40KB) — the');
+    console.log('      rule budget now bounds its effect on a verdict but not its cost.');
     console.log('      See COMPASS_CONSISTENCY.md and open thread #15.');
   }
   process.exit(failed ? 1 : 0);

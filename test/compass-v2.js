@@ -91,9 +91,10 @@ test('non-OPEN semantic decision carries evidence + hash + parser_version', () =
 
 test('message contract renders PAUSE banner', () => {
   const d = classifySemantic('Bash', { command: 'rm -f ./x*' }, { cwd: process.cwd() });
-  const msg = renderDecision(d, { action_summary: 'rm -f ./x*', token: 'deadbeef' });
+  const msg = renderDecision(d, { action_summary: 'rm -f ./x*', token: 'deadbeef', pending_id: 7 });
   assert.ok(msg.lines[0].includes('PAUSE'));
-  assert.ok(msg.text.includes('token='));
+  assert.ok(!msg.text.includes('deadbeef'), 'the message names the request, never the token');
+  assert.ok(msg.text.includes('#7'));
   assert.strictEqual(msg.message_version, MESSAGE_VERSION);
 });
 

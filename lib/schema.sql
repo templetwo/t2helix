@@ -63,10 +63,17 @@ CREATE TABLE IF NOT EXISTS goals (
   last_referenced INTEGER NOT NULL
 );
 
--- The trailing five columns are v0.12 (Compass V2). Fresh installs get them
--- here; databases created before v0.12 get them from migrateSchema() in
--- chronicle.js, which is a no-op when they already exist. Keep the two in step —
--- this file is meant to describe the real shape of the table.
+-- The trailing eight columns are v0.12 (five for Compass V2, three for ruleset
+-- provenance). Fresh installs get them here; older databases get them from
+-- migrateSchema() in chronicle.js, which is a no-op when they already exist.
+-- Keep the two in step — this file is meant to describe the real shape of the
+-- table, and a drift makes fresh installs and upgrades disagree.
+--
+-- ruleset_hash / ruleset_source / rules_eligible answer the question the other
+-- columns cannot: WHICH rules produced this verdict, and was any rule eligible
+-- to evaluate the call at all. rules_eligible = 0 means "never evaluated", which
+-- an OPEN classification alone cannot express. NULL in any of the three means
+-- the row predates the column — provenance unknown, never assume.
 CREATE TABLE IF NOT EXISTS compass_log (
   id INTEGER PRIMARY KEY,
   session_id TEXT,
@@ -81,11 +88,26 @@ CREATE TABLE IF NOT EXISTS compass_log (
   evidence_json TEXT,
   parser_version TEXT,
   message_version TEXT,
-  shadow_json TEXT
+  shadow_json TEXT,
+  ruleset_hash TEXT,
+  ruleset_source TEXT,
+  rules_eligible INTEGER
 );
 
 CREATE INDEX IF NOT EXISTS idx_compass_session ON compass_log(session_id);
 CREATE INDEX IF NOT EXISTS idx_compass_classification ON compass_log(classification);
+
+-- One row per distinct ruleset ever in force, so compass_log.ruleset_hash
+-- resolves to the actual rules rather than naming a set nobody kept. The
+-- manifest lists every rule in LOAD ORDER (classify() returns on first match, so
+-- order is part of the decision) with a digest of its unredacted pattern.
+CREATE TABLE IF NOT EXISTS compass_rulesets (
+  ruleset_hash TEXT PRIMARY KEY,
+  source TEXT,
+  rule_count INTEGER,
+  manifest_json TEXT NOT NULL,
+  first_seen_at INTEGER NOT NULL
+);
 
 CREATE TABLE IF NOT EXISTS pending_confirmations (
   id INTEGER PRIMARY KEY,
@@ -102,7 +124,13 @@ CREATE TABLE IF NOT EXISTS pending_confirmations (
   expires_at INTEGER NOT NULL,
   -- v0.12 semantic identity (see the compass_log note above).
   normalized_action_hash TEXT,
-  parser_version TEXT
+  parser_version TEXT,
+  -- Approval provenance. An approval turns a soft-deny into an allow, so the row
+  -- must say where it arrived from; a NULL here means the approval predates the
+  -- column, which is 'unattributed', not 'operator'. approved_tty is the raw
+  -- fact at approval time — nothing gates on it.
+  approved_origin TEXT,
+  approved_tty INTEGER
 );
 
 CREATE INDEX IF NOT EXISTS idx_pending_token ON pending_confirmations(token);

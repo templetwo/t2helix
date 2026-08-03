@@ -41,11 +41,23 @@ Environment:
 | Var | Default | Meaning |
 | --- | --- | --- |
 | `T2HELIX_SYNC_INTERVAL` | `5` | Poll interval, seconds |
-| `JETSON_USER` | `jetson` | SSH user for the relay host (placeholder — set this) |
-| `JETSON_HOST` | `jetson.local` | SSH host for the relay host (placeholder — set this) |
+| `JETSON_USER` | `jetson` | SSH user for the relay host (placeholder — set this; plain name only, see below) |
+| `JETSON_HOST` | `jetson.local` | SSH host for the relay host (placeholder — set this; plain name only, see below) |
 
 > The defaults are intentionally generic placeholders so no private network
 > detail ships in the repo. Set the env vars to point at your own relay host.
+
+> **`JETSON_USER` / `JETSON_HOST` must match `^[A-Za-z0-9][A-Za-z0-9._-]*$`.**
+> The monitor execs `ssh` with an argv array (no shell), and a value beginning
+> with `-` would still be read by `ssh` as an option (`-oProxyCommand=…`), so
+> both variables are validated once at startup. A value that does not match
+> stops the monitor immediately with **exit status 2** and an error on stderr
+> naming the offending variable — it does not fail silently once per poll.
+>
+> This is deliberately fail-closed and **rejects some legitimate values**: IPv6
+> literals (`::1`, `[2001:db8::1]`), scoped addresses (`fe80::1%en0`), and
+> `ssh_config` aliases that start with `_` or `-` (e.g. `_gateway`). Put those
+> behind a plain-name `Host` alias in `~/.ssh/config` and use the alias.
 
 ## Proof
 

@@ -9,6 +9,7 @@ const SERVER_INFO = { name: 't2helix', version: require('../package.json').versi
 
 // Transport flag: --transport stdio (default) | --transport sse
 // Port flag:      --port 3742 (default, SSE only)
+// Host flag:      --host 127.0.0.1 (default, SSE only) | T2HELIX_SSE_HOST
 const argv = process.argv.slice(2);
 function argValue(flag) {
   const i = argv.indexOf(flag);
@@ -16,6 +17,11 @@ function argValue(flag) {
 }
 const TRANSPORT = argValue('--transport') || 'stdio';
 const PORT = parseInt(argValue('--port') || '3742', 10);
+// This surface reads and writes the chronicle with no authentication of its
+// own, so it stays on loopback unless someone asks for otherwise in as many
+// words. Same default the dashboard binds to.
+const HOST = argValue('--host') || process.env.T2HELIX_SSE_HOST || '127.0.0.1';
+const LOOPBACK_HOSTS = new Set(['127.0.0.1', '::1']);
 
 const TOOLS = [
   {
@@ -161,18 +167,18 @@ const TOOLS = [
   },
   {
     name: 'confirm_pending',
-    description: 'Approve a pending PAUSE confirmation by token. After approval, retry the original tool call within 10 minutes; the compass will consume the approval and let it through. Single-use per token.',
+    description: 'Approve a pending PAUSE confirmation by token. The deny message does not carry the token — list_pending shows the requests awaiting approval. After approval, retry the original tool call within 10 minutes; the compass will consume the approval and let it through. Single-use per token. Every approval is recorded with the origin it arrived from; approvals through this surface are recorded as "mcp".',
     inputSchema: {
       type: 'object',
       properties: {
-        token: { type: 'string', description: 'Token from the deny message (e.g., "ab12cd34ef567890").' }
+        token: { type: 'string', description: 'Token for the pending request, from list_pending.' }
       },
       required: ['token']
     }
   },
   {
     name: 'list_pending',
-    description: 'List unexpired pending or approved confirmation requests. Useful for reviewing what is waiting to be approved or has been approved but not yet consumed.',
+    description: 'List unexpired pending or approved confirmation requests. Useful for reviewing what is waiting to be approved or has been approved but not yet consumed. Approved entries carry the origin the approval arrived from.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -393,7 +399,10 @@ function handleToolCall(name, args) {
       return textContent({ count: entries.length, entries });
     }
     case 'confirm_pending': {
-      const result = ch.approveConfirmation({ token: args.token });
+      // Origin is set by the surface, not by the caller: this server is the
+      // model-facing one, so an approval arriving here is recorded 'mcp' even if
+      // the arguments claim otherwise.
+      const result = ch.approveConfirmation({ token: args.token, origin: 'mcp' });
       return textContent(result);
     }
     case 'list_pending': {
@@ -540,9 +549,19 @@ function startSSE() {
     }
   });
 
-  httpServer.listen(PORT, () => {
-    const actualPort = httpServer.address().port;
-    process.stderr.write(`T2Helix MCP (SSE) listening on http://localhost:${actualPort}/sse\n`);
+  // Report the address the kernel actually gave us, never the one we asked
+  // for: a startup line that names a host it did not bind is a false all-clear.
+  httpServer.listen(PORT, HOST, () => {
+    const addr = httpServer.address();
+    const shown = addr.family === 'IPv6' ? `[${addr.address}]` : addr.address;
+    process.stderr.write(`T2Helix MCP (SSE) listening on http://${shown}:${addr.port}/sse\n`);
+    if (!LOOPBACK_HOSTS.has(addr.address)) {
+      process.stderr.write(
+        `[t2helix] WARNING: SSE bound to ${addr.address} — the chronicle and compass tools are ` +
+        'reachable from off this machine, unauthenticated. Unset T2HELIX_SSE_HOST (or drop --host) ' +
+        'to return to loopback.\n'
+      );
+    }
   });
 
   const shutdown = () => {

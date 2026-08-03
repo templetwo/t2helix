@@ -62,29 +62,54 @@ test('PreToolUse: OPEN action → empty {} + exit 0', () => {
 });
 
 test('PreToolUse: WITNESS action → deny, no override token', () => {
+  // WHY THESE ASSERTIONS AND NOT `!/confirm_pending/`: that string used to be the
+  // only thing separating a WITNESS floor from a soft-deny, because the PAUSE
+  // deny text named the tool. It no longer does — the deny now names a pending
+  // REQUEST, not the credential — so `!/confirm_pending/` is satisfied by both
+  // classifications and discriminates nothing. The guard below is rebuilt on
+  // three things a PAUSE render structurally cannot satisfy:
+  //   1. no pending row is minted at all (the hook mints only for PAUSE);
+  //   2. the `[soft-deny]` prefix, which decision-message.js derives directly
+  //      from `isPause` (and which the hook's fallback reasonText preserves);
+  //   3. the BLOCKED banner, likewise classification-driven.
+  // Do NOT assert the "immutable WITNESS floor" sentence: the hook passes
+  // saferPathFor(rule_id), and rm-rf-wildcard has a safer path, so that sentence
+  // is replaced by "Safer path: …" on exactly this specimen.
+  const sid = 'int-witness';
   const r = runHook('pre-tool-use.js', {
-    session_id: 'int-witness',
+    session_id: sid,
     tool_name: 'Bash',
     tool_input: { command: 'rm -rf /' }
   });
   assert.strictEqual(r.code, 0);
   assert.strictEqual(r.out.hookSpecificOutput.permissionDecision, 'deny');
-  assert.ok(/rm-rf/.test(r.out.hookSpecificOutput.permissionDecisionReason), 'reason names the rule');
-  assert.ok(!/confirm_pending/.test(r.out.hookSpecificOutput.permissionDecisionReason),
-    'WITNESS must NOT mint an override token');
+  const reason = r.out.hookSpecificOutput.permissionDecisionReason;
+  assert.ok(/rm-rf/.test(reason), 'reason names the rule');
+  assert.strictEqual(
+    ch.listPendingConfirmations({ session_id: sid, limit: 10 }).length, 0,
+    'WITNESS must mint no pending confirmation'
+  );
+  assert.ok(!/\[soft-deny\]/.test(reason), 'a WITNESS floor is not a soft-deny');
+  assert.ok(/T2Helix Compass - BLOCKED/.test(reason), 'WITNESS renders the BLOCKED banner');
+  assert.ok(!/approval required/i.test(reason), 'WITNESS offers no approval route');
+  assert.ok(!/confirm_pending/.test(reason), 'WITNESS must NOT mint an override token');
 });
 
-test('PreToolUse: PAUSE action → deny with confirm_pending token', () => {
+test('PreToolUse: PAUSE action → deny naming a pending request, not its token', () => {
+  const sid = 'int-pause';
   const r = runHook('pre-tool-use.js', {
-    session_id: 'int-pause',
+    session_id: sid,
     tool_name: 'Bash',
     tool_input: { command: 'echo aws_secret=abc' }
   });
   assert.strictEqual(r.code, 0);
   assert.strictEqual(r.out.hookSpecificOutput.permissionDecision, 'deny');
-  assert.ok(/\[soft-deny\]/.test(r.out.hookSpecificOutput.permissionDecisionReason), 'PAUSE is a soft-deny');
-  assert.ok(/confirm_pending with token="[0-9a-f]+"/.test(r.out.hookSpecificOutput.permissionDecisionReason),
-    'PAUSE must mint an override token');
+  const reason = r.out.hookSpecificOutput.permissionDecisionReason;
+  assert.ok(/\[soft-deny\]/.test(reason), 'PAUSE is a soft-deny');
+  const pending = ch.listPendingConfirmations({ session_id: sid, limit: 10 });
+  assert.strictEqual(pending.length, 1, 'PAUSE must mint a confirmation request');
+  assert.ok(reason.includes(`#${pending[0].id}`), 'the deny names the request by id');
+  assert.ok(!reason.includes(pending[0].token), 'the deny must not carry the token');
 });
 
 // ── PreToolUse: full PAUSE override loop (mint → approve → consume → re-deny) ─
@@ -93,14 +118,16 @@ test('PreToolUse: PAUSE override loop is single-use end-to-end', () => {
   const sid = 'int-override';
   const payload = { session_id: sid, tool_name: 'Bash', tool_input: { command: 'echo api_key=zzz' } };
 
-  // 1. First call mints a token.
+  // 1. First call mints a request. The token is found through list_pending —
+  // the deny string does not carry it.
   const first = runHook('pre-tool-use.js', payload);
-  const m = /token="([0-9a-f]+)"/.exec(first.out.hookSpecificOutput.permissionDecisionReason);
-  assert.ok(m, 'first call mints a token');
-  const token = m[1];
+  assert.strictEqual(first.out.hookSpecificOutput.permissionDecision, 'deny', 'first call denies');
+  const pending = ch.listPendingConfirmations({ session_id: sid, limit: 10 });
+  assert.strictEqual(pending.length, 1, 'first call mints a confirmation request');
+  const token = pending[0].token;
 
   // 2. Approve it (as the confirm_pending MCP tool would).
-  const approval = ch.approveConfirmation({ token });
+  const approval = ch.approveConfirmation({ token, origin: 'mcp' });
   assert.strictEqual(approval.ok, true, 'token approves');
 
   // 3. Retry the identical action → approval consumed, tool let through.
@@ -113,28 +140,42 @@ test('PreToolUse: PAUSE override loop is single-use end-to-end', () => {
     'single-use: a second retry is denied again');
 });
 
-// ── PreToolUse: fail-open on adversarial input ──────────────────────────────
+// ── PreToolUse: adversarial input is not a clearance ────────────────────────
+//
+// These three asserted `{}` until 0.13.0. `{}` is the OPEN payload, so an
+// unreadable payload was reported to the harness in the exact bytes an evaluated
+// clearance uses, and wrote no compass_log row at all. Exiting 0 with valid JSON
+// is still the contract — the host must not break — but the payload is now a deny
+// carrying NOT_EVALUATED. See test/compass-fail-closed.js for the full floor.
 
-test('PreToolUse: empty stdin → {} exit 0 (fail-open)', () => {
+test('PreToolUse: empty stdin → deny, exit 0 (fail-closed, host intact)', () => {
   const res = spawnSync('node', [path.join(HOOK_DIR, 'pre-tool-use.js')], {
     input: '', env: { ...process.env, T2HELIX_DATA_DIR: tmpDir }, encoding: 'utf8'
   });
   assert.strictEqual(res.status, 0);
-  assert.deepStrictEqual(JSON.parse((res.stdout || '{}').trim() || '{}'), {});
+  const out = JSON.parse((res.stdout || '{}').trim() || '{}');
+  assert.strictEqual(out.hookSpecificOutput.permissionDecision, 'deny');
 });
 
-test('PreToolUse: non-JSON garbage stdin → {} exit 0 (fail-open)', () => {
+test('PreToolUse: non-JSON garbage stdin → deny, exit 0 (fail-closed, host intact)', () => {
   const res = spawnSync('node', [path.join(HOOK_DIR, 'pre-tool-use.js')], {
     input: 'not json at all {{{', env: { ...process.env, T2HELIX_DATA_DIR: tmpDir }, encoding: 'utf8'
   });
   assert.strictEqual(res.status, 0);
-  assert.deepStrictEqual(JSON.parse((res.stdout || '{}').trim() || '{}'), {});
+  const out = JSON.parse((res.stdout || '{}').trim() || '{}');
+  assert.strictEqual(out.hookSpecificOutput.permissionDecision, 'deny');
+  assert.ok(/gate-input-unparseable/.test(out.hookSpecificOutput.permissionDecisionReason),
+    'the reason names which failure path fired');
 });
 
-test('PreToolUse: valid JSON missing tool_name/tool_input → {} exit 0', () => {
+test('PreToolUse: valid JSON missing tool_name/tool_input → deny, exit 0', () => {
   const r = runHook('pre-tool-use.js', { session_id: 'int-missing' });
   assert.strictEqual(r.code, 0);
-  assert.deepStrictEqual(r.out, {});
+  assert.strictEqual(r.out.hookSpecificOutput.permissionDecision, 'deny');
+  const row = ch.db()
+    .prepare(`SELECT classification FROM compass_log WHERE session_id = 'int-missing'`).get();
+  assert.strictEqual(row.classification, 'NOT_EVALUATED',
+    'the audit trail distinguishes "not evaluated" from "allowed"');
 });
 
 // ── PreToolUse: broken native binding (ABI mismatch) — fail-open AND rules survive

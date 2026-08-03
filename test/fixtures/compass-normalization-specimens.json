@@ -1,0 +1,312 @@
+{
+  "version": "0.12.0",
+  "description": "Haystack-normalization corpus: quoted / long-form flag bypasses, git reset flag position, the prose corpus that normalization must not move, and the '#' boundary the reset token walk deliberately does not parse.",
+  "comment_boundary": [
+    {
+      "id": "comment-fp-plain",
+      "command": "git reset HEAD~1 # avoid --hard",
+      "pre_j": "OPEN",
+      "post_j": "WITNESS",
+      "post_j_rule": "git-reset-hard",
+      "kind": "false_positive",
+      "note": "A trailing shell comment is argument text to a token walk. Fails SAFE (deny)."
+    },
+    {
+      "id": "comment-fp-soft",
+      "command": "git reset --soft HEAD~1 # not --hard",
+      "pre_j": "OPEN",
+      "post_j": "WITNESS",
+      "post_j_rule": "git-reset-hard",
+      "kind": "false_positive",
+      "note": "Same shape. The legacy layer already cannot tell prose from invocation."
+    },
+    {
+      "id": "comment-catch-ref-branch",
+      "command": "git reset refs/heads/topic#1 --hard",
+      "pre_j": "OPEN",
+      "post_j": "WITNESS",
+      "post_j_rule": "git-reset-hard",
+      "kind": "real_catch",
+      "note": "A git ref may contain '#'. Excluding '#' from the token class loses this."
+    },
+    {
+      "id": "comment-catch-ref-short",
+      "command": "git reset feature#42 --hard",
+      "pre_j": "OPEN",
+      "post_j": "WITNESS",
+      "post_j_rule": "git-reset-hard",
+      "kind": "real_catch",
+      "note": "Issue-numbered branch names are ordinary. Same loss."
+    },
+    {
+      "id": "comment-catch-path",
+      "command": "git reset HEAD~1 -- a#b.txt --hard",
+      "pre_j": "OPEN",
+      "post_j": "WITNESS",
+      "post_j_rule": "git-reset-hard",
+      "kind": "real_catch",
+      "note": "A path may contain '#'. Same loss."
+    }
+  ],
+  "quoted_flag_bypasses": [
+    {
+      "id": "rm-double-quoted-rf",
+      "command": "rm \"-rf\" /tmp/*",
+      "plain_twin": "rm -rf /tmp/*",
+      "expected": "WITNESS",
+      "expected_rule": "rm-rf-wildcard"
+    },
+    {
+      "id": "rm-single-quoted-rf",
+      "command": "rm '-rf' /tmp/*",
+      "plain_twin": "rm -rf /tmp/*",
+      "expected": "WITNESS",
+      "expected_rule": "rm-rf-wildcard"
+    },
+    {
+      "id": "rm-quoted-rf-home",
+      "command": "rm \"-rf\" ~/data/*",
+      "plain_twin": "rm -rf ~/data/*",
+      "expected": "WITNESS",
+      "expected_rule": "rm-rf-wildcard"
+    },
+    {
+      "id": "rm-quoted-flags-separate",
+      "command": "rm \"-r\" \"-f\" /tmp/*",
+      "plain_twin": "rm -r -f /tmp/*",
+      "expected": "WITNESS",
+      "expected_rule": "rm-rf-wildcard"
+    },
+    {
+      "id": "push-double-quoted-force",
+      "command": "git push \"--force\" origin main",
+      "plain_twin": "git push --force origin main",
+      "expected": "WITNESS",
+      "expected_rule": "git-push-force"
+    },
+    {
+      "id": "push-single-quoted-force",
+      "command": "git push '--force' origin main",
+      "plain_twin": "git push --force origin main",
+      "expected": "WITNESS",
+      "expected_rule": "git-push-force"
+    },
+    {
+      "id": "push-quoted-short-force",
+      "command": "git push \"-f\" origin main",
+      "plain_twin": "git push -f origin main",
+      "expected": "WITNESS",
+      "expected_rule": "git-push-force"
+    },
+    {
+      "id": "reset-double-quoted-hard",
+      "command": "git reset \"--hard\" HEAD~1",
+      "plain_twin": "git reset --hard HEAD~1",
+      "expected": "WITNESS",
+      "expected_rule": "git-reset-hard"
+    },
+    {
+      "id": "reset-single-quoted-hard",
+      "command": "git reset '--hard' HEAD~1",
+      "plain_twin": "git reset --hard HEAD~1",
+      "expected": "WITNESS",
+      "expected_rule": "git-reset-hard"
+    }
+  ],
+  "long_flag_bypasses": [
+    {
+      "id": "rm-both-long",
+      "command": "rm --recursive --force /tmp/*",
+      "plain_twin": "rm -r -f /tmp/*",
+      "expected": "WITNESS",
+      "expected_rule": "rm-rf-wildcard"
+    },
+    {
+      "id": "rm-long-recursive-short-force",
+      "command": "rm --recursive -f /tmp/*",
+      "plain_twin": "rm -r -f /tmp/*",
+      "expected": "WITNESS",
+      "expected_rule": "rm-rf-wildcard"
+    },
+    {
+      "id": "rm-short-recursive-long-force",
+      "command": "rm -r --force /tmp/*",
+      "plain_twin": "rm -r -f /tmp/*",
+      "expected": "WITNESS",
+      "expected_rule": "rm-rf-wildcard"
+    },
+    {
+      "id": "rm-long-reordered",
+      "command": "rm --force --recursive /tmp/*",
+      "plain_twin": "rm -f -r /tmp/*",
+      "expected": "WITNESS",
+      "expected_rule": "rm-rf-wildcard"
+    },
+    {
+      "id": "rm-long-recursive-root",
+      "command": "rm --recursive --force /",
+      "plain_twin": "rm -r -f /",
+      "expected": "WITNESS",
+      "expected_rule": "rm-rf-wildcard"
+    },
+    {
+      "id": "rm-quoted-long-flags",
+      "command": "rm \"--recursive\" \"--force\" /tmp/*",
+      "plain_twin": "rm -r -f /tmp/*",
+      "expected": "WITNESS",
+      "expected_rule": "rm-rf-wildcard"
+    }
+  ],
+  "reset_flag_position": [
+    {
+      "id": "reset-hard-last",
+      "command": "git reset HEAD~1 --hard",
+      "plain_twin": "git reset --hard HEAD~1",
+      "expected": "WITNESS",
+      "expected_rule": "git-reset-hard"
+    },
+    {
+      "id": "reset-hard-after-ref",
+      "command": "git reset origin/main --hard",
+      "plain_twin": "git reset --hard origin/main",
+      "expected": "WITNESS",
+      "expected_rule": "git-reset-hard"
+    },
+    {
+      "id": "reset-hard-after-flag",
+      "command": "git reset -q HEAD~1 --hard",
+      "plain_twin": "git reset --hard HEAD~1",
+      "expected": "WITNESS",
+      "expected_rule": "git-reset-hard"
+    },
+    {
+      "id": "reset-quoted-hard-last",
+      "command": "git reset HEAD~1 \"--hard\"",
+      "plain_twin": "git reset --hard HEAD~1",
+      "expected": "WITNESS",
+      "expected_rule": "git-reset-hard"
+    }
+  ],
+  "must_stay_open": [
+    {
+      "id": "force-with-lease",
+      "command": "git push --force-with-lease origin main",
+      "expected": "OPEN"
+    },
+    {
+      "id": "force-with-lease-quoted",
+      "command": "git push \"--force-with-lease\" origin main",
+      "expected": "OPEN"
+    },
+    {
+      "id": "reset-soft",
+      "command": "git reset --soft HEAD~1",
+      "expected": "OPEN"
+    },
+    {
+      "id": "reset-mixed",
+      "command": "git reset --mixed HEAD~1",
+      "expected": "OPEN"
+    },
+    {
+      "id": "reset-plain",
+      "command": "git reset HEAD~1",
+      "expected": "OPEN"
+    },
+    {
+      "id": "reset-then-echo-hard",
+      "command": "git reset HEAD~1 && echo --hard",
+      "expected": "OPEN"
+    },
+    {
+      "id": "reset-piped-grep-hard",
+      "command": "git reset HEAD~1 | grep --hard",
+      "expected": "OPEN"
+    },
+    {
+      "id": "reset-newline-separated",
+      "command": "git reset HEAD~1\n--hard",
+      "expected": "OPEN"
+    },
+    {
+      "id": "prod-read",
+      "command": "kubectl get pods --context prod",
+      "expected": "OPEN"
+    },
+    {
+      "id": "plain-list",
+      "command": "ls -la /tmp",
+      "expected": "OPEN"
+    }
+  ],
+  "rule_order_preserved": [
+    {
+      "id": "long-flag-delete-then-force-push",
+      "command": "rm --force /tmp/x.log && git push --force origin main",
+      "expected": "WITNESS",
+      "expected_rule": "git-push-force",
+      "reason": "Normalization must not let rule #1 (a migrated family, first in a first-match-wins list) capture a chained command whose gate is a later rule. The 2026-07-26 revert was exactly this: enforce then cleared the whole verdict on migrated-family grounds and the push gate was lost."
+    },
+    {
+      "id": "quoted-flag-delete-then-force-push",
+      "command": "rm \"-f\" /tmp/x.log && git push --force origin main",
+      "expected": "WITNESS",
+      "expected_rule": "git-push-force",
+      "reason": "Same shape reached through the dequote rather than the flag table."
+    },
+    {
+      "id": "quoted-flag-delete-then-drop-table",
+      "command": "rm \"-f\" /tmp/x.log && psql -c \"DROP TABLE users\"",
+      "expected": "WITNESS",
+      "expected_rule": "drop-table-or-db"
+    },
+    {
+      "id": "long-flag-delete-then-prod-delete",
+      "command": "rm --force /tmp/x.log && kubectl delete pod api --context prod",
+      "expected": "WITNESS",
+      "expected_rule": "deploy-prod"
+    }
+  ],
+  "prose_false_positives": [
+    { "id": "prose-rm-and-push", "command": "echo \"never run: rm -rf / && git push --force origin main\"", "legacy_baseline": "WITNESS", "legacy_baseline_rule": "rm-rf-wildcard" },
+    { "id": "prose-rm-apostrophe", "command": "echo \"don't ever rm -rf / on a live box\"", "legacy_baseline": "WITNESS", "legacy_baseline_rule": "rm-rf-wildcard" },
+    { "id": "prose-reset-hard", "command": "echo 'documentation: git reset --hard discards work'", "legacy_baseline": "WITNESS", "legacy_baseline_rule": "git-reset-hard" },
+    { "id": "prose-push-force-printf", "command": "printf \"%s\\n\" \"git push --force is a rewrite\"", "legacy_baseline": "WITNESS", "legacy_baseline_rule": "git-push-force" },
+    { "id": "prose-drop-table", "command": "echo \"DROP TABLE is destructive\"", "legacy_baseline": "WITNESS", "legacy_baseline_rule": "drop-table-or-db" },
+    { "id": "prose-force-advice", "command": "echo \"use --force with care\"", "legacy_baseline": "OPEN", "legacy_baseline_rule": null },
+    { "id": "prose-recursive-advice", "command": "echo \"the --recursive flag implies -r\"", "legacy_baseline": "OPEN", "legacy_baseline_rule": null },
+    { "id": "sed-substitute", "command": "sed -i 's/a/b/' file.txt", "legacy_baseline": "OPEN", "legacy_baseline_rule": null },
+    { "id": "sed-range", "command": "sed -n '1,20p' README.md", "legacy_baseline": "OPEN", "legacy_baseline_rule": null },
+    { "id": "git-log-format", "command": "git log --format=\"%h %s\" -n 5", "legacy_baseline": "OPEN", "legacy_baseline_rule": null },
+    { "id": "git-log-pretty", "command": "git log --pretty='%an' -20", "legacy_baseline": "OPEN", "legacy_baseline_rule": null },
+    { "id": "grep-force", "command": "grep -r \"force\" lib/", "legacy_baseline": "OPEN", "legacy_baseline_rule": null },
+    { "id": "grep-reset-hard-docs", "command": "grep -rn 'reset --hard' docs/", "legacy_baseline": "OPEN", "legacy_baseline_rule": null },
+    { "id": "jq-rules", "command": "jq '.rules[]' lib/rules/compass-rules.json", "legacy_baseline": "OPEN", "legacy_baseline_rule": null },
+    { "id": "jq-version", "command": "jq -r \".version\" package.json", "legacy_baseline": "OPEN", "legacy_baseline_rule": null },
+    { "id": "python-inline", "command": "python -c \"print(1)\"", "legacy_baseline": "OPEN", "legacy_baseline_rule": null },
+    { "id": "node-inline", "command": "node -e \"console.log(process.version)\"", "legacy_baseline": "OPEN", "legacy_baseline_rule": null },
+    { "id": "npm-run-force", "command": "npm run build -- --force", "legacy_baseline": "OPEN", "legacy_baseline_rule": null },
+    { "id": "npm-verbose", "command": "npm install --verbose", "legacy_baseline": "OPEN", "legacy_baseline_rule": null },
+    { "id": "git-rebase-interactive", "command": "git rebase --interactive HEAD~3", "legacy_baseline": "OPEN", "legacy_baseline_rule": null },
+    { "id": "commit-message-force", "command": "git commit -m \"add --force docs\"", "legacy_baseline": "OPEN", "legacy_baseline_rule": null },
+    { "id": "commit-message-apostrophe", "command": "git commit -m \"it's done\"", "legacy_baseline": "OPEN", "legacy_baseline_rule": null },
+    { "id": "push-plain", "command": "git push origin main", "legacy_baseline": "OPEN", "legacy_baseline_rule": null },
+    { "id": "pull-rebase", "command": "git pull --rebase origin main", "legacy_baseline": "OPEN", "legacy_baseline_rule": null },
+    { "id": "git-status", "command": "git status --short", "legacy_baseline": "OPEN", "legacy_baseline_rule": null },
+    { "id": "kubectl-describe-prod", "command": "kubectl describe deploy api --namespace production", "legacy_baseline": "OPEN", "legacy_baseline_rule": null },
+    { "id": "terraform-plan-prod", "command": "terraform plan -var environment=production", "legacy_baseline": "OPEN", "legacy_baseline_rule": null },
+    { "id": "rm-relative-file", "command": "rm -f ./notes.txt", "legacy_baseline": "OPEN", "legacy_baseline_rule": null },
+    { "id": "rm-relative-no-flag", "command": "rm ./build/output.js", "legacy_baseline": "OPEN", "legacy_baseline_rule": null },
+    { "id": "curl-quoted-url", "command": "curl -s \"https://example.com/api\" -o out.json", "legacy_baseline": "OPEN", "legacy_baseline_rule": null },
+    { "id": "docker-format", "command": "docker ps --format \"{{.Names}}\"", "legacy_baseline": "OPEN", "legacy_baseline_rule": null },
+    { "id": "awk-print", "command": "awk '{print $1}' access.log", "legacy_baseline": "OPEN", "legacy_baseline_rule": null },
+    { "id": "tar-create", "command": "tar -czf backup.tgz ./src", "legacy_baseline": "OPEN", "legacy_baseline_rule": null },
+    { "id": "find-name", "command": "find . -name \"*.js\" -type f", "legacy_baseline": "OPEN", "legacy_baseline_rule": null },
+    { "id": "echo-then-ls", "command": "echo \"ok\" && ls", "legacy_baseline": "OPEN", "legacy_baseline_rule": null },
+    { "id": "bash-c-ls", "command": "bash -c 'ls /tmp'", "legacy_baseline": "OPEN", "legacy_baseline_rule": null },
+    { "id": "export-path", "command": "export PATH=\"$HOME/bin:$PATH\"", "legacy_baseline": "OPEN", "legacy_baseline_rule": null },
+    { "id": "cat-quoted", "command": "cat \"README.md\"", "legacy_baseline": "OPEN", "legacy_baseline_rule": null },
+    { "id": "diff-quoted", "command": "diff \"a.txt\" \"b.txt\"", "legacy_baseline": "OPEN", "legacy_baseline_rule": null },
+    { "id": "mv-quoted", "command": "mv \"old.txt\" \"new.txt\"", "legacy_baseline": "OPEN", "legacy_baseline_rule": null }
+  ]
+}

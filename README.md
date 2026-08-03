@@ -36,8 +36,8 @@ Plus an in-process MCP server exposing eighteen tools:
 | `resolve_thread` | Close an open thread by id with a resolution. Stamps `resolved_at` + `resolution`; thread drops out of `get_state.open_threads`. |
 | `get_state` | Read current goal + recent open threads + recent insights. |
 | `recall_compass` | Query the compass log of past PreToolUse classifications (filter by classification, matched_only, limit). |
-| `confirm_pending` | Approve a pending PAUSE confirmation by token. Single-use; the retry consumes the approval. |
-| `list_pending` | Review unexpired pending/approved/used confirmation requests. |
+| `confirm_pending` | Approve a pending PAUSE confirmation by token (from `list_pending`, not from the deny message). Single-use; the retry consumes the approval. The origin of every approval is recorded. |
+| `list_pending` | Review unexpired pending/approved/used confirmation requests, including the origin each approval arrived from. |
 | `list_method_candidates` | (v0.4) Review the queue of auto-distilled method **candidates** the Stop hook produced from successful sessions. Quarantined — they never surface in recall until promoted. Filter by `status` (`pending`/`promoted`/`dismissed`). |
 | `promote_method` | (v0.4) Promote a candidate (by `id`) to a trusted, surfaceable `domain:'method'` insight (`source:promoted`). The only path from quarantine onto the recalled surface. |
 | `dismiss_method_candidate` | (v0.4) Reject a candidate (by `id`) so it leaves the review queue without becoming a method. |
@@ -58,17 +58,84 @@ Action Intermediate Representation sits between hook input and policy:
 - **Safe-repeat leases** bind to `normalized_action_hash` + `parser_version` + `cwd`, are session-scoped and use-bounded, and never cover WITNESS.
 - Replay historical fires: `npm run replay-compass -- --limit 50`
 
+## Compass rules gate a CAPABILITY, not a tool name
+
+A rule's `tool` field names the surface it guards. `tool: "Bash"` means **shell
+execution**, not "the tool literally named Bash": any tool whose input carries a
+non-empty `command` or `script` string is evaluated against the same WITNESS
+floor. A tool that runs a shell under a different name (`mcp__shell__run`,
+`Terminal`, …) is no longer ungated.
+
+| field | meaning |
+|---|---|
+| `tool: "Bash"` | guards shell execution wherever it happens |
+| `tool: "X"` (anything else) | exact tool scoping, matched against the tool's input envelope |
+| `tool_exact: true` | opts a shell rule back out — Bash and nothing else |
+| `capability: "shell"` | opt-in: match this rule against shell payloads too |
+
+Which string a rule is matched against is decided **per rule**: a rule that names
+the tool (or is unscoped) sees the action string; a rule reached by the shell
+capability sees every `command`/`script` value; a rule reached both ways sees
+both. Every command-shaped field is evaluated, so a benign `command` cannot hide
+a destructive `script`.
+
+Cost, stated rather than claimed to be zero: prose sitting in a `command` or
+`script` field can match a rule and hard-deny (`WITNESS`, no override token).
+Measured specimens and the operator levers are in `COMPASS_CONSISTENCY.md`. The
+only lever over the bundled floor itself is `T2HELIX_DATA_DIR/compass/rules.json`,
+which replaces it wholesale — a repo `.t2helix/policy.json` is additive and can
+never override a bundled rule ID.
+
+`compass_log` records `ruleset_hash`, `ruleset_source` and `rules_eligible` for
+every verdict; `rules_eligible: 0` means no rule could evaluate the call, which
+is distinct from evaluated-and-cleared.
+
 ## PAUSE override flow
 
 Under `defaultMode: bypassPermissions` (the typical Claude Code config), `permissionDecision: ask` is silently overridden by the harness. To preserve a real safety surface for PAUSE-classified actions, T2Helix routes PAUSE through `deny` with a token-based override:
 
 1. Tool call matches a PAUSE rule (e.g., a `-----BEGIN RSA PRIVATE KEY-----` pattern in a Bash command).
-2. Hook creates a `pending_confirmations` row keyed by `(session_id, sha256(action_summary))`, returns `deny` with the token in the reason text.
-3. To approve: call `mcp__t2helix__confirm_pending` with the token.
-4. Retry the original action within 10 minutes. Hook finds the matching approval, consumes it, lets the call through, and re-logs in `compass_log` as OPEN with `reason: "approved via token X (consumed)"`.
-5. The approval is single-use. A new approval is needed for another retry.
+2. Hook creates a `pending_confirmations` row keyed by `(session_id, sha256(action_summary))` and returns `deny`. The reason text names the request by **id** and says approval is required; it does **not** carry the token. The deny string is read by the party being denied, so the gate does not volunteer the credential that lifts it.
+3. Find the request: `list_pending` shows what is awaiting approval, with its token.
+4. To approve: call `mcp__t2helix__confirm_pending` with that token. The approval is recorded with the origin it arrived from (`mcp` for this surface, `unattributed` when a caller names none) and whether it came from a TTY. Nothing is gated on either — they are recorded so the row states what it is.
+5. Retry the original action within 10 minutes. Hook finds the matching approval, consumes it, lets the call through, and re-logs in `compass_log` as OPEN with `user_override: "token:<id> origin=<origin>"`.
+6. The approval is single-use. A new approval is needed for another retry.
 
 WITNESS has no override path — those operations require manual rule edits.
+
+## When the gate cannot decide (v0.13.0)
+
+A PreToolUse hook that fails internally used to emit `{}`, which is the same payload an
+evaluated OPEN emits — so an unreadable payload or a hook killed at its 5s timeout was
+indistinguishable from a cleared call, and left no `compass_log` row. Those paths now
+classify `NOT_EVALUATED`: the call is denied, the row is written, and no override token is
+issued (there is no verdict to override). `classify()` also runs on a time budget and
+stops with `NOT_EVALUATED` rather than finishing a rule list it never got through, so one
+slow pattern cannot starve the rules after it.
+
+| Env var | Default | Effect |
+| --- | --- | --- |
+| `T2HELIX_GATE_FAILURE_MODE` | `deny` | `open` restores the pre-0.13.0 permissive behaviour for non-evaluation paths only. Never affects a real WITNESS or PAUSE; the audit row is written either way. |
+| `T2HELIX_GATE_BUDGET_MS` | `3500` | Above this, the hook will not return a clearance it spent too long producing. |
+| `T2HELIX_CLASSIFY_BUDGET_MS` | `1200` | Wall clock for the whole rule loop. |
+| `T2HELIX_RULE_BUDGET_MS` | `400` | A rule slower than this is named in the row's evidence. |
+| `T2HELIX_SEMANTIC_SKIP_BYTES` | `4096` | Above this size, an action the legacy rules already classified WITNESS skips the semantic leg. WITNESS is the top of the lattice, so that leg could only clear it — skipping fails closed. PAUSE and OPEN are never skipped at any size, because for those the semantic leg can escalate. |
+| `T2HELIX_SEMANTIC_BUDGET_MS` | `1200` | If the legacy leg already spent this long, the semantic leg is not entered and the legacy verdict stands. |
+| `T2HELIX_CAPABILITY_BUDGET_MS` | `400` | Budget for a call the released gate would not have evaluated at all — a shell payload on a tool no rule in force names. The tighter of this and `T2HELIX_CLASSIFY_BUDGET_MS` applies. Overrunning it clears the call with `rule_matched = capability-scan-declined` rather than denying: on that carrier the previous release cleared it without reading it, so declining is parity, not a fail-open. Unreachable on `Bash`. |
+
+A budget cannot interrupt a regex already running, so the second half of the defence is
+that the patterns themselves are linear. `git-push-force` and `no-verify` are written so
+they cannot restart on every occurrence of their own trigger, and `lib/secrets.js` anchors
+the URL-scheme alternative so it cannot rescan a long unbroken token from every offset.
+`deploy-prod` could not be rewritten that way — its read-only carve-out can block an
+earlier trigger that a later one does not, so restarting later changes which commands
+match — so it keeps its pattern as the specification and is evaluated by
+`lib/rules/deploy-prod-matcher.js`, a linear reimplementation held to the pattern by an
+equivalence walk over 2.28M generated inputs (`test/compass-no-worse-than-base.js`). One
+rule remains quadratic in trigger count — this repo's own `.t2helix/policy.json` entry —
+and is named in `test/compass-fail-closed.js` (`KNOWN_SUPERLINEAR`) rather than left
+implicit. On a tool the previous release did not gate, such a rule can only cost a
+decline, never a denial: see `T2HELIX_CAPABILITY_BUDGET_MS` above.
 
 ## Where state lives
 

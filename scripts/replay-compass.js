@@ -6,9 +6,12 @@
 //
 // Usage:
 //   node scripts/replay-compass.js [--limit N] [--data-dir PATH] [--json]
+//                                  [--strict [--allow-unadjudicable]]
 //
-// Exit 0 always for observational runs (diffs are reported, not failed), unless
-// --strict is set (then non-zero if any adversarial-floor weakening is detected).
+// Exit 0 always for observational runs (diffs are reported, not failed).
+// Under --strict:  1 = an adversarial-floor weakening was detected
+//                  3 = coverage was incomplete (rows that could not be
+//                      adjudicated at all); suppress with --allow-unadjudicable
 
 const fs = require('fs');
 const path = require('path');
@@ -22,6 +25,7 @@ const LIMIT = parseInt(flag('--limit') || '100', 10);
 const DATA_DIR = flag('--data-dir');
 const AS_JSON = args.includes('--json');
 const STRICT = args.includes('--strict');
+const ALLOW_UNADJUDICABLE = args.includes('--allow-unadjudicable');
 
 if (DATA_DIR) process.env.T2HELIX_DATA_DIR = DATA_DIR;
 
@@ -29,17 +33,55 @@ const ch = require('../lib/chronicle');
 const { classifyV2 } = require('../lib/compass-v2');
 const { ALL_MIGRATED_RULE_IDS } = require('../lib/compass-semantic');
 
+// Rebuild a tool call from its action_summary. Two failure modes are now named
+// rather than guessed around, because both made this instrument report the
+// OPPOSITE of the truth about the rows it was pointed at:
+//
+//   1. For an unrecognized tool, summarizeAction's `rest` is the JSON ENVELOPE
+//      (`{"command":"…"}`), not a bare string. Reconstructing it as {raw: rest}
+//      put the payload in a field no rule can be matched against, so every
+//      capability-gated deny replayed as OPEN and was reported as a softening.
+//   2. summarizeAction truncates at 200 chars with a trailing '…'. A truncated
+//      summary cannot be faithfully replayed AT ALL — the trigger may be in the
+//      part that was cut — and replaying it anyway manufactures a false
+//      softening (or hides a real weakening) with no signal. Those rows are now
+//      counted as `unreplayable` and excluded from every other count.
+const TRUNCATION_MARK = '…';
+
 function parseToolFromSummary(summary) {
   // summarizeAction format: "Tool: rest"
-  const m = String(summary || '').match(/^([A-Za-z]+):\s*(.*)$/s);
+  const m = String(summary || '').match(/^([A-Za-z_][A-Za-z0-9_]*):\s*(.*)$/s);
   if (!m) return { tool_name: 'Bash', tool_input: { command: String(summary || '') } };
   const tool_name = m[1];
   const rest = m[2];
-  if (tool_name === 'Bash') return { tool_name, tool_input: { command: rest.replace(/…$/, '') } };
-  if (tool_name === 'Edit' || tool_name === 'Write' || tool_name === 'MultiEdit') {
-    return { tool_name, tool_input: { file_path: rest.replace(/…$/, '') } };
+  if (rest.endsWith(TRUNCATION_MARK)) {
+    // summarizeAction truncates at exactly 200 chars + the mark, so length 201
+    // is the unambiguous signature. A SHORTER string ending in an ellipsis is
+    // ambiguous — it could be a genuine command — and is still refused, because
+    // the two errors are not symmetric: over-refusing costs coverage (reported),
+    // while replaying a partial command manufactures a false softening or hides
+    // a real weakening (silent). action_summary is scrubbed on write, which can
+    // change its length, so the length test refines the label, not the rule.
+    return {
+      tool_name,
+      tool_input: null,
+      unreplayable: rest.length === 201 ? 'summary-truncated' : 'summary-ends-in-ellipsis'
+    };
   }
-  return { tool_name, tool_input: { raw: rest } };
+  if (tool_name === 'Bash') return { tool_name, tool_input: { command: rest } };
+  if (tool_name === 'Edit' || tool_name === 'Write' || tool_name === 'MultiEdit') {
+    return { tool_name, tool_input: { file_path: rest } };
+  }
+  // Unrecognized tool: the summary holds the JSON envelope actionString built.
+  try {
+    const parsed = JSON.parse(rest);
+    if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
+      return { tool_name, tool_input: parsed };
+    }
+  } catch {
+    // fall through — a summary that is not an envelope cannot be reconstructed
+  }
+  return { tool_name, tool_input: null, unreplayable: 'envelope-unparseable' };
 }
 
 function severity(c) {
@@ -64,6 +106,8 @@ function main() {
 
   const report = {
     replayed: 0,
+    unreplayable: 0,
+    unreplayable_rows: [],
     agree_legacy: 0,
     agree_semantic: 0,
     diffs: [],
@@ -73,9 +117,24 @@ function main() {
 
   // Replay oldest-first for readability
   for (const row of rows.slice().reverse()) {
-    const { tool_name, tool_input } = row.tool_name
-      ? { tool_name: row.tool_name, tool_input: parseToolFromSummary(row.action_summary).tool_input }
-      : parseToolFromSummary(row.action_summary);
+    const parsed = parseToolFromSummary(row.action_summary);
+    const { tool_name, tool_input } = parsed;
+
+    // A row whose call cannot be reconstructed is NOT evidence of agreement,
+    // softening or weakening. Counting it as any of those is how a drift
+    // instrument lies about the drift it exists to measure.
+    if (parsed.unreplayable || !tool_input) {
+      report.unreplayable++;
+      if (report.unreplayable_rows.length < 20) {
+        report.unreplayable_rows.push({
+          id: row.id,
+          reason: parsed.unreplayable || 'no-tool-input',
+          original: { classification: row.classification, rule: row.rule_matched },
+          summary: row.action_summary
+        });
+      }
+      continue;
+    }
 
     // Prefer stored tool_name
     const tn = row.tool_name || tool_name;
@@ -133,7 +192,12 @@ function main() {
   if (AS_JSON) {
     process.stdout.write(JSON.stringify(report, null, 2) + '\n');
   } else {
-    console.log(`replay-compass: ${report.replayed} rows`);
+    const total = report.replayed + report.unreplayable;
+    console.log(`replay-compass: ${report.replayed} of ${total} rows adjudicated (coverage ${total ? Math.round(100 * report.replayed / total) : 100}%)`);
+    console.log(`  unadjudicable:  ${report.unreplayable}  (summary truncated or not an envelope — no verdict either way; --strict exits 3 unless --allow-unadjudicable)`);
+    for (const u of report.unreplayable_rows.slice(0, 5)) {
+      console.log(`    #${u.id} ${u.reason} :: was ${u.original.classification}/${u.original.rule}`);
+    }
     console.log(`  agree_legacy:   ${report.agree_legacy}`);
     console.log(`  agree_semantic: ${report.agree_semantic}`);
     console.log(`  diffs:          ${report.diffs.length}`);
@@ -161,7 +225,21 @@ function main() {
     }
   }
 
+  // --strict is a tripwire the operator reads before turning enforce mode on, so
+  // it must not go quiet on the rows it could not judge. Before this change a
+  // truncated row that replayed softer landed in `weakenings` and failed
+  // --strict; excluding it from the counts (correct — it is not evidence of
+  // drift) would otherwise have turned that tripwire silent. Incomplete coverage
+  // is therefore its own non-zero exit, distinct from a real weakening, and
+  // --allow-unadjudicable is the explicit opt-in for "I accept partial coverage".
   if (STRICT && report.weakenings.length) process.exit(1);
+  if (STRICT && report.unreplayable && !ALLOW_UNADJUDICABLE) {
+    console.error(
+      `replay-compass --strict: ${report.unreplayable} of ${report.replayed + report.unreplayable} rows could not be adjudicated. ` +
+      'A green run over partial coverage is not evidence of no drift. Pass --allow-unadjudicable to accept it.'
+    );
+    process.exit(3);
+  }
   process.exit(0);
 }
 
