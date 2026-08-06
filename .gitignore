@@ -3,3 +3,5 @@ node_modules/
 .DS_Store
 test/_tmp/
 .t2helix-data/
+# Per-machine better-sqlite3 ABI stamp (written by npm run rebuild)
+.native-abi.json

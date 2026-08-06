@@ -3,6 +3,29 @@
 All notable changes to t2helix are documented here. Format loosely follows
 [Keep a Changelog](https://keepachangelog.com/); versioning is [SemVer](https://semver.org/).
 
+## [Unreleased] — better-sqlite3 ABI root fix
+
+### Fixed
+- **False-green native driver:** `require('better-sqlite3')` does not dlopen the
+  `.node`; only `new Database(...)` does. `loadDriver()` / `health().driver_ok`
+  now force a `:memory:` open so ABI mismatches cannot report GREEN and then
+  die on first chronicle call.
+- **MCP handshake under wrong Node:** `mcp/server.js` refuses start when
+  `health()` is degraded (set `T2HELIX_MCP_SKIP_HEALTH=1` only for fixtures).
+  `.mcp.json` and `npm run serve` go through `scripts/mcp-launch.js`, which
+  re-execs under a stamped or discovered compatible Node when PATH is wrong.
+
+### Added
+- **`lib/native-binding.js`** — probe, stamp (`.native-abi.json`), candidate
+  node discovery, actionable remedy text.
+- **`scripts/mcp-launch.js`**, **`scripts/hook-launch.js`**,
+  **`scripts/write-native-stamp.js`**
+- **`hooks/hooks.json`** routes every hook through `hook-launch.js` so bare
+  PATH `node` (often Node 20 under Claude Code while the binding is Node 22)
+  re-execs onto a compatible binary instead of failing UserPromptSubmit.
+- **`npm run rebuild`** now rebuilds + stamps; **`postinstall`** writes stamp
+  when the binding already loads.
+
 ## [0.13.0] — The gate fails closed, gates a capability, and stops handing over the credential
 
 A security release integrating five independently reviewed fix branches onto one

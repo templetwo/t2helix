@@ -7,6 +7,22 @@ const ch = require('../lib/chronicle');
 
 const SERVER_INFO = { name: 't2helix', version: require('../package.json').version };
 
+// Fail-loud on MCP start when better-sqlite3 cannot open a DB. Hooks remain
+// fail-open; MCP clients were getting a false-green initialize/tools.list under
+// the wrong Node ABI. Prefer scripts/mcp-launch.js so PATH drift re-execs onto
+// a compatible binary before we get here. Set T2HELIX_MCP_SKIP_HEALTH=1 only
+// for deliberate fixture tests that need a process without a working driver.
+if (process.env.T2HELIX_MCP_SKIP_HEALTH !== '1') {
+  const h = ch.health();
+  if (h.degraded) {
+    process.stderr.write(
+      `[t2helix] MCP refuse start — chronicle DEGRADED under ${process.execPath}.\n` +
+        `${h.hint || 'run npm run rebuild in the t2helix install directory'}\n`
+    );
+    process.exit(1);
+  }
+}
+
 // Transport flag: --transport stdio (default) | --transport sse
 // Port flag:      --port 3742 (default, SSE only)
 // Host flag:      --host 127.0.0.1 (default, SSE only) | T2HELIX_SSE_HOST

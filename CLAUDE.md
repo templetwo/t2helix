@@ -33,11 +33,14 @@ no test runner/framework and no lint/format config — match the existing style 
 
 The chronicle is backed by `better-sqlite3`, a native addon compiled against your Node
 ABI. A Node major-version upgrade breaks the binding (`ERR_DLOPEN_FAILED` /
-`NODE_MODULE_VERSION` mismatch) and silently disables recall. `lib/chronicle.js` loads
-the driver **lazily and defensively** (`loadDriver()`, not a top-level `require`) for one
-reason: every hook requires this module at load time, so a top-level throw would escape
-the hook's `try/catch` and break the host CLI — violating fail-open. If recall/compass go
-quiet, run `npm run rebuild`. Do not move the `require('better-sqlite3')` to module top.
+`NODE_MODULE_VERSION` mismatch). **Root trap:** `require('better-sqlite3')` only loads
+the JS wrapper — the `.node` is dlopened inside `new Database(...)`. Any probe that stops
+at `require()` reports false GREEN under the wrong ABI. `loadDriver()` /
+`lib/native-binding.js` force a throwaway `:memory:` open. Hooks still load the driver
+**lazily** (not at module top) so a throw cannot break the host CLI. MCP is fail-loud on
+start and should launch via `scripts/mcp-launch.js` (re-execs a compatible Node when PATH
+is wrong; writes/reads `.native-abi.json` via `npm run rebuild`). Do not move the driver
+require to module top.
 
 ## Architecture: the helix
 

@@ -1761,18 +1761,45 @@ test('compass.loadRules: repo-local policy rule fires via T2HELIX_POLICY_DIR ove
 test('health: returns GREEN when driver + DB + schema are all operational', () => {
   // ch.db() was called at top of this suite, so the DB is open and schema applied.
   const r = ch.health();
-  assert.strictEqual(r.driver_ok, true, 'driver loaded');
+  assert.strictEqual(r.driver_ok, true, 'driver loaded (real :memory: open)');
   assert.strictEqual(r.db_ok, true, 'DB reachable');
   assert.strictEqual(r.schema_ok, true, 'schema present');
   assert.strictEqual(r.degraded, false, 'not degraded');
   assert.strictEqual(r.hint, null, 'no hint when GREEN');
 });
 
-test('health: result carries node_version and data_dir', () => {
+test('health: result carries node_version, node_abi, exec_path, and data_dir', () => {
   const r = ch.health();
   assert.ok(r.node_version.startsWith('v'), 'node_version starts with v');
+  assert.ok(String(r.node_abi || '').length > 0, 'node_abi present');
+  assert.ok(r.exec_path && r.exec_path.length > 0, 'exec_path present');
   assert.ok(r.data_dir.length > 0, 'data_dir non-empty');
   assert.ok(r.db_path.endsWith('chronicle.db'), 'db_path ends in chronicle.db');
+});
+
+test('native-binding: probeBinding forces a real Database open', () => {
+  const native = require('../lib/native-binding');
+  const p = native.probeBinding();
+  assert.strictEqual(p.ok, true, 'probe succeeds under the test node');
+  assert.strictEqual(String(p.modules), String(process.versions.modules));
+});
+
+test('native-binding: stamp round-trip', () => {
+  const fs = require('fs');
+  const path = require('path');
+  const os = require('os');
+  const native = require('../lib/native-binding');
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 't2helix-stamp-'));
+  try {
+    const stamp = native.writeStamp(tmp, { note: 'smoke' });
+    assert.strictEqual(String(stamp.modules), String(process.versions.modules));
+    const read = native.readStamp(tmp);
+    assert.ok(read, 'stamp readable');
+    assert.strictEqual(String(read.modules), String(process.versions.modules));
+    assert.strictEqual(read.execPath, process.execPath);
+  } finally {
+    try { fs.rmSync(tmp, { recursive: true, force: true }); } catch { /* ignore */ }
+  }
 });
 
 // ── manifest — Item 4 (v0.7.0 export/import round-trip) ─────────────────────

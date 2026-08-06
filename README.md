@@ -200,14 +200,19 @@ Each suite runs against an isolated temp data dir. Coverage: compass rule classi
 
 ## Native module
 
-The chronicle is backed by `better-sqlite3`, a native module compiled against your Node ABI. If a Node major-version upgrade leaves recall/compass silently inactive (an `ERR_DLOPEN_FAILED` / `NODE_MODULE_VERSION` mismatch), rebuild the binding:
+The chronicle is backed by `better-sqlite3`, a native module compiled against your Node ABI. **Important:** `require('better-sqlite3')` alone is not a health check — the `.node` is only dlopened inside `new Database(...)`. T2Helix probes with a throwaway `:memory:` open.
+
+If a Node major-version upgrade leaves recall/compass inactive (`ERR_DLOPEN_FAILED` / `NODE_MODULE_VERSION` mismatch):
 
 ```bash
-npm run rebuild       # npm rebuild better-sqlite3
-npm run redact-sweep  # one-shot scrub of credentials that leaked into the chronicle pre-0.2 (see CHANGELOG)
+npm run rebuild       # rebuild better-sqlite3 for THIS node + write .native-abi.json stamp
+npm run doctor        # must show GREEN for native + DB + schema
+npm run redact-sweep  # one-shot scrub of credentials that leaked pre-0.2 (see CHANGELOG)
 ```
 
-The hooks **fail safe**: if the binding can't load, rules-based gating (deny `rm -rf /`, force-push, drop-table) still runs and you'll see a one-line "run `npm rebuild better-sqlite3`" hint instead of a crash or a silently-disabled gate.
+**MCP clients** should launch via `scripts/mcp-launch.js` (also what `.mcp.json` uses). The launcher re-execs under a compatible Node when PATH points at the wrong major version, instead of advertising tools while every DB call fails.
+
+The hooks **fail safe**: if the binding can't load, rules-based gating (deny `rm -rf /`, force-push, drop-table) still runs and you'll see a rebuild hint instead of a crash or a silently-disabled gate. The MCP server **fails loud** on start when the driver is degraded.
 
 ## Status
 

@@ -6,8 +6,8 @@
         "hooks": [
           {
             "type": "command",
-            "command": "node ${CLAUDE_PLUGIN_ROOT}/hooks/user-prompt-submit.js",
-            "timeout": 5
+            "command": "node ${CLAUDE_PLUGIN_ROOT}/scripts/hook-launch.js user-prompt-submit.js",
+            "timeout": 8
           }
         ]
       }
@@ -17,8 +17,8 @@
         "hooks": [
           {
             "type": "command",
-            "command": "node ${CLAUDE_PLUGIN_ROOT}/hooks/pre-tool-use.js",
-            "timeout": 5
+            "command": "node ${CLAUDE_PLUGIN_ROOT}/scripts/hook-launch.js pre-tool-use.js",
+            "timeout": 8
           }
         ]
       }
@@ -28,8 +28,8 @@
         "hooks": [
           {
             "type": "command",
-            "command": "node ${CLAUDE_PLUGIN_ROOT}/hooks/post-tool-use.js",
-            "timeout": 10
+            "command": "node ${CLAUDE_PLUGIN_ROOT}/scripts/hook-launch.js post-tool-use.js",
+            "timeout": 12
           }
         ]
       }
@@ -39,8 +39,8 @@
         "hooks": [
           {
             "type": "command",
-            "command": "node ${CLAUDE_PLUGIN_ROOT}/hooks/pre-compact.js",
-            "timeout": 10
+            "command": "node ${CLAUDE_PLUGIN_ROOT}/scripts/hook-launch.js pre-compact.js",
+            "timeout": 12
           }
         ]
       }
@@ -50,8 +50,8 @@
         "hooks": [
           {
             "type": "command",
-            "command": "node ${CLAUDE_PLUGIN_ROOT}/hooks/stop.js",
-            "timeout": 10
+            "command": "node ${CLAUDE_PLUGIN_ROOT}/scripts/hook-launch.js stop.js",
+            "timeout": 12
           }
         ]
       }
