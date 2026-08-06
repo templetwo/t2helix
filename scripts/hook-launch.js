@@ -64,12 +64,33 @@ if (native.probeBinding().ok) {
     );
     run(alt);
   } else {
-    // Fail-open for hooks: print once-style message and exit 0 so Claude is not blocked.
     process.stderr.write(
       `[t2helix] hook DEGRADED — better-sqlite3 unavailable under any known Node.\n` +
         `  ${native.remedyText()}\n`
     );
-    // Empty JSON on stdout for hooks that expect {}
+    const isGate = path.basename(hookPath) === 'pre-tool-use.js';
+    const failOpen = process.env.T2HELIX_GATE_FAILURE_MODE === 'open';
+    if (isGate && !failOpen) {
+      // The compass cannot run at all in this state. Emitting {} here would be
+      // the exact NOT_EVALUATED-reported-as-OPEN class 0.13.0 closed, reachable
+      // by breaking the native binding. Deny, same contract as pre-tool-use.js.
+      try {
+        process.stdout.write(JSON.stringify({
+          hookSpecificOutput: {
+            hookEventName: 'PreToolUse',
+            permissionDecision: 'deny',
+            permissionDecisionReason:
+              '[t2helix:gate-driver-unavailable] T2Helix Compass - NOT EVALUATED\n' +
+              'Why: better-sqlite3 has no compatible Node on this machine, so the compass ' +
+              'could not run and cannot clear this call.\n' +
+              `Next: ${native.remedyText()} — or the operator can set ` +
+              'T2HELIX_GATE_FAILURE_MODE=open to let unevaluated calls through.'
+          }
+        }) + '\n');
+      } catch { /* ignore */ }
+      process.exit(0);
+    }
+    // Observational hooks fail open so Claude is not blocked.
     try { process.stdout.write('{}\n'); } catch { /* ignore */ }
     process.exit(0);
   }
