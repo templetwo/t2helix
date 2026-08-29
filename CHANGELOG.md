@@ -3,9 +3,29 @@
 All notable changes to t2helix are documented here. Format loosely follows
 [Keep a Changelog](https://keepachangelog.com/); versioning is [SemVer](https://semver.org/).
 
-## [Unreleased] — better-sqlite3 ABI root fix
+## [Unreleased] — better-sqlite3 ABI root fix; the credential gate stops stalling on code
 
 ### Fixed
+- **The credential gate soft-denied ordinary code.** `lib/secrets.js`'s
+  `secret-assign` leg fired on ANY labelled assignment (`token=…`, `key: …`)
+  whose value was 8+ non-space characters, without ever asking what the value
+  WAS. Measured on one seat over seven days of `compass_log`: 52 `PAUSE` and 24
+  confirmed-OPEN on `credential-paste` across four sessions, dominated by a
+  single shape — a labelled assignment whose value is an **expression**: a
+  variable (`TOKEN="$BRIDGE_TOKEN"`), a command substitution
+  (`token=$(cat …)`), a call (`password = getpass()`), a subscript
+  (`api_key: os.environ["X"]`), a file read, or a regex. The specimen that
+  forced the fix is a python one-liner that READS an env file and pastes
+  nothing. Detection now rejects an expression-shaped value at the value
+  position. This is not cosmetic: every PAUSE mints a single-use confirm token,
+  so a gate that cries wolf on ordinary code trains the operator to spend those
+  tokens unread — the exact reflex the credential gate exists to prevent.
+- **The name-only leg was the same bug one leg over.** `\bapi[_-]?key\b` matched
+  on the KEY NAME alone, so narrowing `secret-assign` by itself would have left
+  `api_key: os.environ["X"]` soft-denied by `NAME_ONLY_DETECT` instead. It is now
+  narrowed in **assignment position only**: a bare mention with no value
+  (`echo $api_key`, `cat ~/.aws/secret_access_key`) is still an advisory PAUSE,
+  and a key-name that is in assignment position defers to its value.
 - **False-green native driver:** `require('better-sqlite3')` does not dlopen the
   `.node`; only `new Database(...)` does. `loadDriver()` / `health().driver_ok`
   now force a `:memory:` open so ABI mismatches cannot report GREEN and then
@@ -15,7 +35,44 @@ All notable changes to t2helix are documented here. Format loosely follows
   `.mcp.json` and `npm run serve` go through `scripts/mcp-launch.js`, which
   re-execs under a stamped or discovered compatible Node when PATH is wrong.
 
+### Changed
+- **`DETECTION_REGEX` and `REDACTORS` may now diverge, in one direction only.**
+  A pattern may carry an optional `detectSrc` that is a strict narrowing of its
+  `src`: redactors always compile `src`, detection prefers `detectSrc`. The
+  invariant is directional — **detection ⊆ redaction** — not equality, so the
+  v0.2.0 "detected but not maskable" leak stays closed while the chronicle
+  write-path masker stays WIDER than the gate. That asymmetry is deliberate:
+  over-masking a code expression costs a fingerprint in a chronicle row, whereas
+  over-gating it stalls a benign command. `secret-assign` is the only pattern
+  that uses it. Widening a `detectSrc` past its `src` would reopen the leak.
+- **The 8-character floor and the `[^\s"',}]` value class were left alone,**
+  deliberately. Raising the floor to 16 or restricting the value to a token
+  charset each lose true positives this repo already asserts —
+  `password=hunter2hunter2` (14 chars) and `api_key=abcdefghij` (10) are
+  must-PAUSE adversarial seeds in `test/compass-fail-closed.js`, and
+  `test/smoke.js` asserts detection of `password=P@ssw0rd!Sup3r#SecretValue`,
+  whose token-charset prefix is one character long. Per the release rule in
+  `COMPASS_CONSISTENCY.md` ("strictly no worse than base on every carrier"), the
+  expression lookahead does the whole job without touching the threshold.
+- **One deliberate, recorded detection loss:**
+  `AWS_SECRET_ACCESS_KEY=$(vault read …)` was `PAUSE` on the key name alone and
+  is now `OPEN`. Reading from a secret store is not pasting a credential. It is
+  asserted *as a loss* in `test/secret-assign-literal.js` so it cannot be
+  mistaken for drift.
+
 ### Added
+- **`test/secret-assign-literal.js`** + **`test/fixtures/secret-assign-vectors.js`**,
+  wired into `npm test` and `npm run test:secret-assign`. Measures the leg on
+  three surfaces that can disagree — the regex, `compass.classify()` (what the
+  PreToolUse hook consumes), and `lib/compass-semantic.js`'s
+  `evaluateCredentialPaste()`, which re-tests the same `DETECTION_REGEX`
+  per-haystack and would otherwise have kept the stall reachable in enforce
+  mode. Also asserts the detection ⊆ redaction split directly (the expression
+  values that no longer PAUSE are proven **still masked**), and records accepted
+  residue rather than claiming zero: a bare or dotted identifier value
+  (`token=access_token_variable`, `api_token=self.session.token`) still fires,
+  because that shape is not distinguishable from an opaque token — and excluding
+  dotted runs would lose a JWT.
 - **`lib/native-binding.js`** — probe, stamp (`.native-abi.json`), candidate
   node discovery, actionable remedy text.
 - **`scripts/mcp-launch.js`**, **`scripts/hook-launch.js`**,
