@@ -3,7 +3,14 @@
 All notable changes to t2helix are documented here. Format loosely follows
 [Keep a Changelog](https://keepachangelog.com/); versioning is [SemVer](https://semver.org/).
 
-## [Unreleased] — better-sqlite3 ABI root fix; the credential gate stops stalling on code
+## [0.13.1] — 2026-08-30 — the credential gate stops stalling on code
+
+Cut from the merge of `fix/secret-assign-requires-literal-value` (7ee32ff) onto
+0.13.0. Ships the `secret-assign` literal-value fix — detection now rejects an
+expression-shaped value, via a `detectSrc` that is a strict narrowing of `src`,
+so the invariant becomes directional (detection ⊆ redaction) and the chronicle
+write-path masker stays wider than the gate. Also carries the better-sqlite3
+false-green ABI fix and the degraded-launcher deny.
 
 ### Fixed
 - **The credential gate soft-denied ordinary code.** `lib/secrets.js`'s

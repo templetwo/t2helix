@@ -24,7 +24,7 @@ Two hooks integrated into Claude Code's agent loop:
 - **UserPromptSubmit** → recall: searches a local SQLite chronicle for past insights related to your prompt, plus the current session goal, and injects the result as additional context. Writes the current `session_id` to a state file so the MCP server can use the same signature.
 - **PreToolUse** → compass: matches the proposed tool action against a rule set. **WITNESS** classifications (rm -rf wildcards, `git push --force`, `drop table`, prod-context deploys, `--no-verify`) are hard-denied. **PAUSE** classifications (credential-shaped patterns) are soft-denied with an override token — see "PAUSE override flow" below. As of v0.2, any credential that reaches the chronicle is redacted to a fingerprint on the way in (`lib/secrets.js`), at the `record()` / `logCompass()` write chokepoints. As of **v0.12 (Compass V2)**, PreToolUse also builds an Action IR, runs semantic predicates in **shadow** mode by default (`T2HELIX_COMPASS_V2=shadow|enforce|off`), and can honor safe-repeat leases for confirmed PAUSE actions.
 
-Plus an in-process MCP server exposing eighteen tools:
+Plus an in-process MCP server exposing fifteen tools:
 
 | Tool | Purpose |
 |------|---------|
@@ -137,6 +137,29 @@ and is named in `test/compass-fail-closed.js` (`KNOWN_SUPERLINEAR`) rather than 
 implicit. On a tool the previous release did not gate, such a rule can only cost a
 decline, never a denial: see `T2HELIX_CAPABILITY_BUDGET_MS` above.
 
+## The credential gate requires a literal value (v0.13.1)
+
+The `secret-assign` leg of `lib/secrets.js` fired on ANY labelled assignment
+(`token=...`, `key: ...`) whose value was 8+ non-space characters, without ever asking what
+the value WAS. Ordinary code was therefore soft-denied as a credential paste: a shell
+variable expansion, a command substitution, a bare call such as a getpass prompt, or an
+environment-lookup subscript. Measured on one seat over seven days: 52 PAUSE and 24
+confirmed-OPEN on `credential-paste`. Every PAUSE mints a single-use confirm token, so a
+gate that cries wolf on ordinary code trains the operator to spend those tokens unread --
+the exact reflex the gate exists to prevent.
+
+Detection now rejects an expression-shaped value at the value position. The masking side is
+unchanged: a pattern may carry a `detectSrc` that is a **strict narrowing** of its `src`,
+and `REDACTORS` always compile `src`. The invariant is directional -- **detection is a
+subset of redaction** -- so everything the gate flags is still maskable, while the chronicle
+masker stays wider than the gate. The 8-character floor and the value class are unchanged,
+deliberately: raising either loses short literal passwords the suite already asserts.
+
+One deliberate, recorded detection loss: an AWS secret-key NAME assigned from a secret-store
+read was PAUSE on the key name alone and is now OPEN. Reading from a secret store is not
+pasting a credential. It is asserted *as a loss* in `test/secret-assign-literal.js` so it
+cannot be mistaken for drift.
+
 ## Where state lives
 
 Under Claude Code (the normal install path), data lives under:
@@ -171,7 +194,7 @@ npm run serve
 cloudflare tunnel --url http://localhost:3742
 ```
 
-Then register `http://localhost:3742/sse` (or your tunnel URL) as an MCP connector in your client. The tool surface is identical to the Claude Code plugin — same eighteen tools, same chronicle, same data dir.
+Then register `http://localhost:3742/sse` (or your tunnel URL) as an MCP connector in your client. The tool surface is identical to the Claude Code plugin — same fifteen tools, same chronicle, same data dir.
 
 The stdio path (Claude Code plugin) is unaffected. Both can run simultaneously from the same data dir.
 
