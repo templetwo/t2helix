@@ -220,7 +220,21 @@ fail open on the control path, but log the drop.
 `lib/secrets.js` is the single source of truth for credential patterns. One `PATTERNS`
 table drives BOTH masking (`REDACTORS`) and classification (`DETECTION_REGEX`), so the
 detector can't flag a credential value the redactor fails to mask — the invariant that
-keeps "detected but persisted raw" from happening. The compass binds to it via
+keeps "detected but persisted raw" from happening.
+
+**That invariant is DIRECTIONAL, not equality — detection ⊆ redaction.** A pattern may
+carry an optional `detectSrc` that is a *strict narrowing* of its `src`: `REDACTORS`
+always compile `src`, `DETECTION_REGEX` prefers `detectSrc`. Everything flagged is still
+maskable (the leak stays closed), but the masker is allowed to be WIDER than the gate.
+The asymmetry is the point: over-masking a code expression costs a fingerprint in a
+chronicle row, while over-*gating* it soft-denies a benign command — and since every
+PAUSE mints a single-use confirm token, a gate that cries wolf on ordinary code trains
+the operator to spend those tokens unread. `secret-assign` is the only pattern using it
+(its `src` fires on any labelled assignment with an 8+ char value; its `detectSrc` adds a
+lookahead rejecting expression-shaped values — `$VAR`, `$(cmd)`, `` `cmd` ``, `[expr]`,
+`getpass()`, `os.environ["X"]`). **Never widen a `detectSrc` past its `src`** — that
+reopens the v0.2.0 detect-but-don't-mask leak. `NAME_ONLY_DETECT` carries the same
+narrowing in assignment position only, so a bare key-name mention still warns. The compass binds to it via
 `"pattern_source": "secrets"` on the `credential-paste` rule. `secrets.scrub()` (pattern
 redaction + a fixed-point backstop that coarse-masks any field still holding a maskable
 secret) runs inside the **four** write chokepoints — `record()`, `logCompass()`,
