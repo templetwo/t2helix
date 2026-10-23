@@ -67,10 +67,10 @@ async function main() {
       ? `[PostToolUse] ${action}\nGoal: ${goal.goal}\nResult: ${resultSnippet}`
       : `[PostToolUse] ${action}\nResult: ${resultSnippet}`;
 
-    // Outcome detection — the substrate the helix coupling reads.
-    // Heuristic and explicit; ambiguous responses produce no tag (silent is
-    // safer than mislabeled — the compass-side coupling reads only tagged
-    // entries, so missing labels just mean "no signal," not "false signal").
+    // Outcome detection — the substrate the helix coupling reads. Ambiguous
+    // Bash text is untagged by design (see lib/outcome.js): silent is safer
+    // than mislabeled — the compass-side coupling reads only tagged entries,
+    // so missing labels just mean "no signal," not "false signal".
     const outcome = detectOutcome(tool_name, tool_response);
     const tags = ['post-tool-use', tool_name.toLowerCase()];
     if (outcome) tags.push(`outcome:${outcome}`);

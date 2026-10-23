@@ -246,7 +246,7 @@ test('PreToolUse: broken native binding emits the degraded warning to stderr', (
 
 // ── PostToolUse: outcome tagging + action chain + skip-noise ────────────────
 
-test('PostToolUse: Bash failure → session-action entry tagged outcome:failure + action:<hash>', () => {
+test('PostToolUse: Bash failure text at exit 0 → session-action entry with action:<hash> and no outcome tag', () => {
   const sid = 'int-post-fail';
   const r = runHook('post-tool-use.js', {
     session_id: sid,
@@ -259,8 +259,33 @@ test('PostToolUse: Bash failure → session-action entry tagged outcome:failure 
   const hits = ch.recall({ query: 'pytest', topK: 10, include_meta: true });
   const entry = hits.find(h => /pytest/.test(h.content));
   assert.ok(entry, 'a session-action entry was written for the Bash call');
-  assert.ok(entry.tags.includes('outcome:failure'), 'tagged outcome:failure');
+  assert.ok(!entry.tags.some(t => t.startsWith('outcome:')), 'ambiguous text is untagged');
   assert.ok(entry.tags.some(t => /^action:[0-9a-f]+$/.test(t)), 'tagged action:<hash> for chain linkage');
+});
+
+test('PostToolUse x3 with RED text, then PreToolUse on the same command → no memory PAUSE', () => {
+  const sid = 'int-red-x3';
+  const tool_input = { command: 'python -m unittest discover -s tests' };
+  for (let i = 1; i <= 3; i++) {
+    const post = runHook('post-tool-use.js', {
+      session_id: sid,
+      tool_name: 'Bash',
+      tool_input,
+      tool_response: { stdout: 'FAIL: test_x\nAssertionError: False is not true\nFAILED (failures=1)\n', stderr: '', interrupted: false }
+    });
+    assert.strictEqual(post.code, 0, `PostToolUse run ${i} exited ${post.code}`);
+  }
+  const written = ch.db()
+    .prepare(`SELECT COUNT(*) AS n FROM insights WHERE session_id = ? AND domain = 'session-action'`)
+    .get(sid).n;
+  assert.strictEqual(written, 3, 'each PostToolUse run wrote a session-action entry');
+
+  const r = runHook('pre-tool-use.js', { session_id: sid, tool_name: 'Bash', tool_input });
+  assert.strictEqual(r.code, 0, `exit ${r.code}`);
+  const decision = r.out.hookSpecificOutput && r.out.hookSpecificOutput.permissionDecision;
+  assert.ok(decision !== 'deny' && decision !== 'ask', `PreToolUse must not deny or ask, got ${decision}`);
+  assert.ok(!JSON.stringify(r.out).includes('memory:similar-failures'), 'no memory:similar-failures escalation');
+  assert.deepStrictEqual(r.out, {}, 'OPEN must emit {}');
 });
 
 test('PostToolUse: read-only tool (Read) → {} and no chronicle entry', () => {
