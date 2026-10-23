@@ -13,10 +13,13 @@ test FAILS, a quoted traceback, or a real crash hidden behind a pipe, and the
 tag could not tell which. Ambiguous is now untagged, as the module's own
 contract always said; `interrupted` still tags failure; backgrounded or
 harness-interpreted responses are untagged; clean accepted calls still tag
-`outcome:success`. Measured on one MacBook: 109 false failure tags in two
-days drove four `memory:similar-failures` PAUSEs on successful commands.
-This entry supersedes the criterion-1 description in 0.1.0 below; that text
-stays as history.
+`outcome:success`. Measured on one MacBook: 109 Bash rows tagged
+`outcome:failure` in two days, most of them on successful commands (at least
+19 were real crashes behind a pipe; those are now untagged, not labelled);
+the `memory:similar-failures` rule fired 19 PAUSEs in that window, 14 of them
+on Bash. This entry supersedes the [0.10.0] description of text-based failure
+detection and its Deferred auto-surface bullet below; that text stays as
+history.
 
 ### Changed
 - `lib/outcome.js`: `bashOutcome` returns `null` for failure text, for
