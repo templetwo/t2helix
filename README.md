@@ -267,7 +267,7 @@ Apache-2.0 — see [LICENSE](./LICENSE). Copyright 2026 Anthony Vasquez Sr. (The
 **v0.1.0** — the helix couples: memory and compass feed each other end-to-end.
 
 - Five hooks: recall (UserPromptSubmit), compass (PreToolUse), action-record (PostToolUse), archive (PreCompact), synthesis (Stop)
-- **Helix coupling (criteria 1–4):** PostToolUse tags outcomes (`outcome:success|failure`); PreToolUse recalls *similar* past actions (real FTS5 similarity, not recency) and escalates OPEN→PAUSE when their outcome history warrants it; compass-fires and outcomes share an `action:<hash>` tag so recall returns both ends of the chain
+- **Helix coupling (criteria 1–4):** PostToolUse tags outcomes (`outcome:success` for clean accepted calls, `outcome:failure` only for interrupted calls and Edit/Write errors; ambiguous Bash text is untagged); PreToolUse recalls *similar* past actions (real FTS5 similarity, not recency) and escalates OPEN→PAUSE when their outcome history warrants it; compass-fires and outcomes share an `action:<hash>` tag so recall returns both ends of the chain
 - MCP server with nine tools (incl. `recall_compass`, `confirm_pending`, `list_pending`, `resolve_thread`)
 - PAUSE soft-deny with an **atomic single-use** token override
 - Session ID unification via `.current_session`
