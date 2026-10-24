@@ -183,7 +183,7 @@ const TOOLS = [
   },
   {
     name: 'confirm_pending',
-    description: 'Approve a pending PAUSE confirmation by token. The deny message does not carry the token — list_pending shows the requests awaiting approval. After approval, retry the original tool call within 10 minutes; the compass will consume the approval and let it through. Single-use per token. Every approval is recorded with the origin it arrived from; approvals through this surface are recorded as "mcp".',
+    description: 'Approve a pending PAUSE confirmation by token. The deny message does not carry the token — list_pending shows the requests awaiting approval. After approval, retry the original tool call within 10 minutes; the compass will consume the approval and let it through. Single-use per token. Every approval is recorded with the origin it arrived from; approvals through this surface are recorded as "mcp". When T2HELIX_REQUIRE_HUMAN_CONFIRM is set (default off), approvals through this surface are refused and the request stays pending until a human approves it outside the agent session.',
     inputSchema: {
       type: 'object',
       properties: {

@@ -33,9 +33,23 @@ history.
 
 ### Added
 - `T2HELIX_REQUIRE_HUMAN_CONFIRM=1` makes `confirm_pending` refuse approvals
-  that arrive from the model-facing MCP surface (origin `mcp`); the pending row
-  stays pending for a human, who approves with `scripts/approve-pending.js`.
-  Default off. See README.
+  that arrive from the model-facing MCP surface (origin `mcp`); the row stays
+  pending for a human. Default off. The refusal the model receives names
+  neither the approval script nor where tokens are listed. Plainly: the switch
+  closes the MCP route only, and it must be set in the environment of every
+  process that serves `confirm_pending`. Against an agent that has a shell and
+  write access to the store it is a speed bump, not a wall. See README.
+- `scripts/approve-pending.js`, the human path, recorded as origin `cli`:
+  `T2HELIX_DATA_DIR="$HOME/.claude/plugins/data/t2helix-<marketplace>" node scripts/approve-pending.js <token>`.
+  `--list` shows each pending request's id, action summary, token and expiry.
+  Every result names the chronicle it used. A run with neither
+  `T2HELIX_DATA_DIR` nor `CLAUDE_PLUGIN_DATA` set, or one naming a directory
+  with no `chronicle.db`, is refused with exit 2 and creates nothing.
+- Bundled WITNESS rule `approve-pending-script`: a shell command naming
+  `approve-pending` is hard-denied, reads included, where the PreToolUse hook
+  runs. A human's own terminal runs no hook, so the human path stays open.
+- `test/approval-provenance.js` pins the switch, the refusal text, the
+  terminal script and the rule; `test/compass-fail-closed.js` seeds the rule.
 
 ## [0.13.1] — 2026-08-30 — the credential gate stops stalling on code
 
