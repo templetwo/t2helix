@@ -33,10 +33,10 @@ const tests = [];
 function test(name, fn) { tests.push({ name, fn }); }
 
 const HOOK_DIR = path.join(__dirname, '..', 'hooks');
-function runHook(hookFile, payload) {
+function runHook(hookFile, payload, extraEnv = {}) {
   const res = spawnSync('node', [path.join(HOOK_DIR, hookFile)], {
     input: JSON.stringify(payload),
-    env: { ...process.env, T2HELIX_DATA_DIR: tmpDir },
+    env: { ...process.env, T2HELIX_DATA_DIR: tmpDir, ...extraEnv },
     encoding: 'utf8'
   });
   let out = null;
@@ -181,10 +181,12 @@ test('renderDecision: the NOT_EVALUATED banner and next step are their own branc
   assert.ok(/no verdict to override/.test(r.text), r.text);
 });
 
-test('MESSAGE_VERSION names the merged contract, not either branch alone', () => {
+test('MESSAGE_VERSION names the current contract (0.14.0: switch-aware PAUSE next step)', () => {
   const { MESSAGE_VERSION } = require('../lib/decision-message');
-  assert.strictEqual(MESSAGE_VERSION, 'decision-message/0.12.2',
-    'both the token removal and the NOT_EVALUATED branch changed this contract; ' +
+  // 0.12.2 was the union of the token removal and the NOT_EVALUATED branch;
+  // 0.14.0 adds the switch-aware PAUSE next step. One string per contract.
+  assert.strictEqual(MESSAGE_VERSION, 'decision-message/0.14.0',
+    'the switch-aware PAUSE next step changed this contract; ' +
     'one string may not name two contracts');
   // Every rendered message reports the same version, on every branch.
   for (const classification of ['PAUSE', 'WITNESS', 'NOT_EVALUATED', 'OPEN']) {
@@ -613,6 +615,133 @@ test('PreToolUse: a Bash call that runs approve-pending is hard-denied and mints
   assert.ok(denyReason(r).includes('approve-pending-script'), denyReason(r));
   assert.strictEqual(ch.listPendingConfirmations({ session_id: sid, limit: 10 }).length, 0,
     'a WITNESS deny mints no confirm token, so there is nothing to approve past it');
+});
+
+// ── 7. Model-facing text follows the switch ─────────────────────────────────
+//
+// With the switch on, the model cannot approve, so every surface that used to
+// point it at confirm_pending (or at the listing that carries the token) would
+// be pointing it at a refusal while handing it a credential. Under the switch:
+// list_pending withholds tokens, and the deny/coupling/adapter text says the
+// approval is a human's from a terminal — naming no script, path or token.
+// Switch off: every surface is byte-for-byte what it was.
+
+const { escalateByMemory } = require('../lib/coupling');
+const grok = require('../lib/grok-adapter');
+
+function withSwitch(value, fn) {
+  const prev = process.env.T2HELIX_REQUIRE_HUMAN_CONFIRM;
+  if (value === 'unset') delete process.env.T2HELIX_REQUIRE_HUMAN_CONFIRM;
+  else process.env.T2HELIX_REQUIRE_HUMAN_CONFIRM = value;
+  const restore = () => {
+    if (prev === undefined) delete process.env.T2HELIX_REQUIRE_HUMAN_CONFIRM;
+    else process.env.T2HELIX_REQUIRE_HUMAN_CONFIRM = prev;
+  };
+  let out;
+  try { out = fn(); } catch (e) { restore(); throw e; }
+  if (out && typeof out.then === 'function') return out.finally(restore);
+  restore();
+  return out;
+}
+
+function assertHumanTerminalText(text, label) {
+  assert.ok(/human/i.test(text) && /terminal/i.test(text), `${label}: must say a human approves from a terminal: ${text}`);
+  assert.ok(!/confirm_pending/.test(text), `${label}: still points the model at confirm_pending: ${text}`);
+  assert.ok(!/list_pending/.test(text), `${label}: still points the model at the token listing: ${text}`);
+  assert.ok(!/approve-pending|scripts\/|\.js\b|\/Users\/|~\//.test(text), `${label}: names a script or a path: ${text}`);
+}
+
+test('list_pending over MCP, switch unset: entries carry their token (unchanged)', async (client) => {
+  const sid = 'ap-lp-off-' + Date.now();
+  const p = ch.createPendingConfirmation({ session_id: sid, action_summary: 'lp-off-' + Date.now() });
+  const r = await call(client, 'list_pending', { session_id: sid, limit: 10 });
+  assert.strictEqual(r.count, 1);
+  assert.strictEqual(r.entries[0].token, p.token, 'with the switch off the listing is unchanged');
+  assert.strictEqual(r.note, undefined, 'with the switch off the listing carries no extra line');
+});
+
+test('list_pending over MCP, switch set in the server\'s env: rows returned with the token withheld and a line saying a human approves from the terminal', async () => {
+  const guarded = makeClient({ T2HELIX_REQUIRE_HUMAN_CONFIRM: '1' });
+  try {
+    await initialize(guarded);
+    const sid = 'ap-lp-on-' + Date.now();
+    const p = ch.createPendingConfirmation({ session_id: sid, action_summary: 'lp-on-' + Date.now() });
+    const approvedSid = sid + '-approved';
+    const q = ch.createPendingConfirmation({ session_id: approvedSid, action_summary: 'lp-on-appr-' + Date.now() });
+    assert.strictEqual(ch.approveConfirmation({ token: q.token, origin: 'cli' }).ok, true);
+    const raw = await guarded.request('tools/call', { name: 'list_pending', arguments: { limit: 100 } });
+    const text = raw.result.content[0].text;
+    assert.ok(!text.includes(p.token), 'a pending token reached the model under the switch');
+    assert.ok(!text.includes(q.token), 'an approved token reached the model under the switch');
+    const r = JSON.parse(text);
+    const mine = r.entries.find(e => e.session_id === sid);
+    assert.ok(mine, 'the row itself is still listed');
+    assert.strictEqual(mine.id, p.id, 'the non-secret id is still listed');
+    assert.ok(!('token' in mine) || mine.token === null, `token field still populated: ${JSON.stringify(mine)}`);
+    assert.strictEqual(mine.token_withheld, true);
+    assert.ok(r.entries.every(e => !e.token), 'some entry still carries a token');
+    assert.ok(typeof r.note === 'string', 'the listing must say why the token is absent');
+    assertHumanTerminalText(r.note, 'list_pending note');
+  } finally {
+    await guarded.close();
+  }
+});
+
+test('memory coupling reason: switch unset names confirm_pending (unchanged); switch set says a human approves from a terminal', () => {
+  const base = { classification: 'OPEN', rule_id: null, reason: null };
+  const similar = [{ id: 901, tags: ['outcome:failure'] }, { id: 902, tags: ['outcome:failure'] }, { id: 903, tags: ['outcome:failure'] }];
+  const off = withSwitch('unset', () => escalateByMemory(base, similar));
+  assert.strictEqual(off.classification, 'PAUSE');
+  assert.ok(off.reason.endsWith('if intentional, override via confirm_pending.'), off.reason);
+  const on = withSwitch('1', () => escalateByMemory(base, similar));
+  assert.strictEqual(on.classification, 'PAUSE');
+  assert.ok(on.reason.includes('3/3') && on.reason.includes('#901'), `stats lost: ${on.reason}`);
+  assertHumanTerminalText(on.reason, 'coupling reason');
+});
+
+test('renderDecision PAUSE: switch unset names list_pending (unchanged); switch set says a human approves from a terminal', () => {
+  const decision = { classification: 'PAUSE', rule_id: 'credential-paste', reason: 'cred' };
+  const opts = { action_summary: 'echo api_key=zzz', token: 'deadbeefcafe1234', pending_id: 42 };
+  const off = withSwitch('unset', () => renderDecision(decision, opts));
+  assert.ok(off.text.includes('list_pending shows what is waiting'), off.text);
+  const on = withSwitch('1', () => renderDecision(decision, opts));
+  assert.ok(on.text.includes('#42'), `the request id must still be named: ${on.text}`);
+  assert.ok(/retry/i.test(on.text), on.text);
+  assert.ok(!on.text.includes('deadbeefcafe1234'));
+  assertHumanTerminalText(on.text, 'PAUSE next step');
+});
+
+test('PreToolUse PAUSE deny, switch set in the hook\'s env: says a human approves from a terminal; still mints the request', () => {
+  const sid = 'ap-hook-switch-' + Date.now();
+  const r = runHook('pre-tool-use.js', {
+    session_id: sid,
+    tool_name: 'Bash',
+    tool_input: { command: 'echo aws_secret=abc' }
+  }, { T2HELIX_REQUIRE_HUMAN_CONFIRM: '1' });
+  assert.strictEqual(r.out.hookSpecificOutput.permissionDecision, 'deny');
+  const pending = ch.listPendingConfirmations({ session_id: sid, limit: 10 });
+  assert.strictEqual(pending.length, 1, 'the request is still minted for the human to approve');
+  const reason = denyReason(r);
+  assert.ok(!reason.includes(pending[0].token));
+  assertHumanTerminalText(reason, 'hook deny reason');
+});
+
+test('grok adapter PAUSE: switch unset returns the token and names confirm_pending (unchanged); switch set withholds the token and says a human approves from a terminal', async () => {
+  const offSid = 'ap-grok-off-' + Date.now();
+  const off = await withSwitch('unset', () => grok.grokWitness('echo aws_secret=abc', { session_id: offSid }));
+  assert.strictEqual(off.classification, 'PAUSE');
+  assert.ok(off.pending_token, 'with the switch off the adapter still returns the token');
+  assert.ok(/confirm_pending\(token\)/.test(off.note), off.note);
+
+  const onSid = 'ap-grok-on-' + Date.now();
+  const on = await withSwitch('1', () => grok.grokWitness('echo aws_secret=abc', { session_id: onSid }));
+  assert.strictEqual(on.classification, 'PAUSE');
+  assert.strictEqual(on.blocked, true);
+  const minted = ch.listPendingConfirmations({ session_id: onSid, limit: 10 });
+  assert.strictEqual(minted.length, 1, 'the request is still minted for the human');
+  assert.strictEqual(on.pending_token, null, 'the adapter handed the token to the model under the switch');
+  assert.ok(!JSON.stringify(on).includes(minted[0].token), 'the token is somewhere in the adapter result under the switch');
+  assertHumanTerminalText(on.note, 'grok adapter note');
 });
 
 async function main() {

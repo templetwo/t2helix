@@ -4,6 +4,7 @@
 const readline = require('readline');
 const http = require('http');
 const ch = require('../lib/chronicle');
+const { requireHumanConfirm, HUMAN_APPROVAL_SENTENCE } = require('../lib/human-confirm');
 
 const SERVER_INFO = { name: 't2helix', version: require('../package.json').version };
 
@@ -194,7 +195,7 @@ const TOOLS = [
   },
   {
     name: 'list_pending',
-    description: 'List unexpired pending or approved confirmation requests. Useful for reviewing what is waiting to be approved or has been approved but not yet consumed. Approved entries carry the origin the approval arrived from.',
+    description: 'List unexpired pending or approved confirmation requests. Useful for reviewing what is waiting to be approved or has been approved but not yet consumed. Approved entries carry the origin the approval arrived from. When T2HELIX_REQUIRE_HUMAN_CONFIRM is set, tokens are withheld from this listing, because approval is then a human\'s, from a terminal.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -426,6 +427,15 @@ function handleToolCall(name, args) {
         session_id: args.session_id,
         limit: num(args.limit) ?? 20
       });
+      // Under the human-confirm switch the model cannot approve, so handing it
+      // the token would hand it a credential it can only spend some other way.
+      // The rows stay (id, action, status, expiry); the token is withheld here,
+      // at the model-facing surface, not in listPendingConfirmations, which the
+      // terminal path also reads.
+      if (requireHumanConfirm()) {
+        const withheld = entries.map(e => ({ ...e, token: null, token_withheld: true }));
+        return textContent({ count: withheld.length, entries: withheld, note: `Tokens withheld: T2HELIX_REQUIRE_HUMAN_CONFIRM is set. ${HUMAN_APPROVAL_SENTENCE}` });
+      }
       return textContent({ count: entries.length, entries });
     }
     case 'list_method_candidates': {
