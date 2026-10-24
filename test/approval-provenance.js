@@ -588,7 +588,10 @@ function agentApproveCommands(token) {
     `if true; then node scripts/approve-pending.js ${token}; fi`,
     `for t in a; do ./scripts/approve-pending.js ${token}; done`,
     `{ node scripts/approve-pending.js ${token}; }`,
-    `! node scripts/approve-pending.js ${token}`
+    `! node scripts/approve-pending.js ${token}`,
+    `if node scripts/approve-pending.js ${token}; then :; fi`,
+    `while node scripts/approve-pending.js ${token}; do :; done`,
+    `until ./scripts/approve-pending.js ${token}; do :; done`
   ];
 }
 
