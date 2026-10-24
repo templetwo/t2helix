@@ -41,7 +41,10 @@ behaviour (the switch's first form never shipped); this list says what changed.
   command position, is still WITNESS with no override; `git add`, `git log
   --`, `git commit -m` and `gh pr create --body` that only name the file are
   no longer denied. Shell-keyword positions (`if`, `while`, `until`, `then`,
-  `do`, `else`, `elif`, `{`, `!`) count as command positions. Every class
+  `do`, `else`, `elif`, `{`, `!`) count as command positions, and so does the
+  point right after `)`, so `X=$(true) node <script>` and a script under a
+  directory with parentheses in its name are still denied. Direct execution
+  needs a path (a `/`): a bare name in parentheses is a mention. Every class
   after a command-position start excludes `(`, `)` and backtick, so runs of
   `(` / `$(` stay linear (a first form took 3.6 s at 64 KB and hid
   credential-paste behind NOT_EVALUATED at the hook on a 120 KB pad).
@@ -50,7 +53,7 @@ behaviour (the switch's first form never shipped); this list says what changed.
   a redirect with no space, `env -i`, `sudo -u`, `nice -n`, `time -p`,
   `exec -a`, `bash -lc`, `eval`, `npx node`, stdin feeds (`cat f | node -`,
   `node < f`), variables, a flag with a separate argument (`node -r x`),
-  `timeout N node`, `xargs node`, `A=$(...) node`.
+  `timeout N node`, `xargs node`, a bare script name executed off `PATH`.
 - **Test isolation.** Six suites (regression, integration,
   approval-provenance, and, because the allowlist made them switch-sensitive,
   smoke, compass-v2, compass-fail-closed) unset the switch at the top, so

@@ -282,7 +282,7 @@ test('approval-script rule: no generated 1-2 piece pad of its own vocabulary is 
   const rule = compass.loadRules().find(r => r.id === 'approve-' + 'pending-script');
   assert.ok(rule, 'the approval-script rule is loaded');
   const AP7 = 'app' + 'rove-';
-  const pieces = ['(', '$(', 'node', 'node ', 'env ', '-', '-x', ' -x', 'a=', 'a=b ', '"', "'", '/', ' ', '\t', '\n',
+  const pieces = [')', 'a="', '(', '$(', 'node', 'node ', 'env ', '-', '-x', ' -x', 'a=', 'a=b ', '"', "'", '/', ' ', '\t', '\n',
     'then ', 'if ', 'bash -c ', ';', 'x', '`', '{ ', '! ', AP7];
   const N = 8000, CEILING_MS = 25;
   const seen = new Set();

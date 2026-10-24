@@ -591,7 +591,12 @@ function agentApproveCommands(token) {
     `! node scripts/approve-pending.js ${token}`,
     `if node scripts/approve-pending.js ${token}; then :; fi`,
     `while node scripts/approve-pending.js ${token}; do :; done`,
-    `until ./scripts/approve-pending.js ${token}; do :; done`
+    `until ./scripts/approve-pending.js ${token}; do :; done`,
+    // A closing parenthesis before the script must not hide it: ")" is a
+    // command-position start too (security review of the class change).
+    `X=$(true) node approve-pending ${token}`,
+    `node "./a(1)/approve-pending.js" ${token}`,
+    `"./d(x)/approve-pending.js" ${token}`
   ];
 }
 
@@ -610,7 +615,10 @@ const AGENT_MENTION_COMMANDS = [
   'git commit -m "narrow the approve-pending-script rule"',
   'gh pr create --title "rule" --body "touches scripts/approve-pending.js and the approve-pending-script rule"',
   'git diff HEAD~1 -- scripts/approve-pending.js',
-  'git show 98e5051:scripts/approve-pending.js'
+  'git show 98e5051:scripts/approve-pending.js',
+  // A bare name in parentheses is a mention, not a run: direct execution
+  // needs a path (a "/"), and nothing executes a bare name off PATH here.
+  'echo (approve-pending)'
 ];
 
 test('compass: a command that only mentions approve-pending (git add, git log --, git commit -m, gh pr create --body) is not denied by approve-pending-script, under legacy, V2 shadow and V2 enforce', () => {

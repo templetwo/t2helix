@@ -55,7 +55,7 @@
       "id": "approve-pending-script",
       "classification": "WITNESS",
       "tool": "Bash",
-      "pattern": "(?i)(?:^|[;&|(`\\n]|\\$\\(|\\b(?:sh|bash|zsh|dash)[ \\t]+-c[ \\t]+)[ \\t]*[\"']?(?:(?:[a-z_][a-z0-9_]*=(?:\"[^\"\\n]*\"|'[^'\\n]*'|[^\\s;&|\"'`()]*)|env|exec|sudo|nohup|time|command|nice|if|while|until|then|do|else|elif|\\{|!)[ \\t]+)*(?:(?:[^\\s;&|\"'`()]*/)?(?:node|nodejs|bun|deno)(?:\\.exe)?(?:[ \\t]+run)?(?:[ \\t]+-[^\\s;&|()`]*)*[ \\t]+[\"']?[^\\s;&|\"'`()]*|[^\\s;&|\"'`()]*)approve-pending(?:\\.[cm]?js)?(?=[\"']?(?:\\s|$|[;&|)`]))",
+      "pattern": "(?i)(?:^|[;&|()`\\n]|\\$\\(|\\b(?:sh|bash|zsh|dash)[ \\t]+-c[ \\t]+)[ \\t]*[\"']?(?:(?:[a-z_][a-z0-9_]*=(?:\"[^\"\\n]*\"|'[^'\\n]*'|[^\\s;&|\"'`()]*)|env|exec|sudo|nohup|time|command|nice|if|while|until|then|do|else|elif|\\{|!)[ \\t]+)*(?:(?:[^\\s;&|\"'`()]*/)?(?:node|nodejs|bun|deno)(?:\\.exe)?(?:[ \\t]+run)?(?:[ \\t]+-[^\\s;&|()`]*)*[ \\t]+[\"']?[^\\s;&|\"'`()]*|[^\\s;&|\"'`()]*/)approve-pending(?:\\.[cm]?js)?(?=[\"']?(?:\\s|$|[;&|)`]))",
       "reason": "The command runs approve-pending, the terminal path a human uses to approve a pending PAUSE (recorded as origin cli). It is not run from an agent session: a human runs it outside the session. Invocations are denied (node, nodejs, bun or deno running it, or the script executed directly, in command position); a command that only mentions the file, such as git add, git log or a commit message, is not."
     },
     {
