@@ -17,6 +17,11 @@ const { spawnSync } = require('child_process');
 
 const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 't2helix-integration-'));
 process.env.T2HELIX_DATA_DIR = tmpDir;
+// The human-confirm switch is read from the environment by every process that
+// approves, and this suite asserts the default-off behaviour (or sets the switch
+// per test). An operator who exported it in the shell would otherwise turn the
+// default-off assertions red, so the suite starts from the switch unset.
+delete process.env.T2HELIX_REQUIRE_HUMAN_CONFIRM;
 
 // Chronicle, loaded with the SAME data dir the spawned hooks use, so the test
 // can approve tokens and inspect what the hooks wrote.

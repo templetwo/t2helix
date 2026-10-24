@@ -23,7 +23,7 @@ const { escalateByMemory } = require('../lib/coupling');
 const { NOT_EVALUATED, isClearance } = legacyCompass;
 
 // How long the whole gate may take before its own verdict stops being trustworthy.
-// hooks.json gives PreToolUse 5000ms; past this the harness is close enough to
+// hooks.json gives PreToolUse 8000ms ("timeout": 8); past this the harness is close enough to
 // killing the process that a clearance is more likely to be "we ran out of time"
 // than "we looked and it was fine."
 const GATE_BUDGET_MS = Number(process.env.T2HELIX_GATE_BUDGET_MS) > 0

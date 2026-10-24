@@ -3,7 +3,7 @@
 All notable changes to t2helix are documented here. Format loosely follows
 [Keep a Changelog](https://keepachangelog.com/); versioning is [SemVer](https://semver.org/).
 
-## [Unreleased] — 2026-10-23 — the tagger stops learning failures from quoted text
+## [0.14.0] — 2026-10-24 — the tagger stops learning failures from quoted text
 
 `lib/outcome.js` no longer tags a Bash response `outcome:failure` because its
 text contains `FAILED`, `AssertionError`, a traceback, `Error:` or `fatal:`.
@@ -21,6 +21,47 @@ on Bash. This entry supersedes the [0.10.0] description of text-based failure
 detection and its Deferred auto-surface bullet below; that text stays as
 history.
 
+### Fixed (review follow-up to PR #12, cut as 0.14.0)
+The Added bullets below were edited in place to describe the released
+behaviour (the switch's first form never shipped); this list says what changed.
+- **Under the human-confirm switch only origin `cli` approves.** The switch
+  first refused origin `mcp` by name and let every other origin through;
+  `approveConfirmation` is now an allowlist of one while the switch is on
+  (`mcp`, `unattributed`, `CLI` and every other label refused, row left
+  pending). Switch off: unchanged. New `lib/human-confirm.js`.
+- **Model-facing text follows the switch.** With it on, `list_pending`
+  withholds tokens (rows kept, `token_withheld: true`, a note), and the PAUSE
+  deny text, the `memory:similar-failures` reason and the Grok adapter's
+  PAUSE result say approval is a human's from a terminal, naming no script,
+  path or token; the adapter also withholds its `pending_token`.
+  `MESSAGE_VERSION` is `decision-message/0.14.0`. Each process reads the
+  switch itself, so set it wherever the MCP server, hooks and adapter run.
+- **`approve-pending-script` denies invocations, not mentions.** `node` /
+  `nodejs` / `bun` / `deno` running the script, or executing it directly, in
+  command position, is still WITNESS with no override; `git add`, `git log
+  --`, `git commit -m` and `gh pr create --body` that only name the file are
+  no longer denied. Shell-keyword positions (`if`, `while`, `until`, `then`,
+  `do`, `else`, `elif`, `{`, `!`) count as command positions, and so does the
+  point right after `)`, so `X=$(true) node <script>` and a script under a
+  directory with parentheses in its name are still denied. Direct execution
+  by path or by bare name (found on `PATH`) is denied in command position; a
+  bare name directly inside parentheses, `(<name>)`, is a mention. Every class
+  after a command-position start excludes `(`, `)` and backtick, so runs of
+  `(` / `$(` stay linear (a first form took 3.6 s at 64 KB and hid
+  credential-paste behind NOT_EVALUATED at the hook on a 120 KB pad).
+  Residuals: false positives where `;`, `|`, `(` or `&` inside a quoted string
+  is followed by an invocation (write such text through a file); not matched:
+  a redirect with no space, `env -i`, `sudo -u`, `nice -n`, `time -p`,
+  `exec -a`, `bash -lc`, `eval`, `npx node`, stdin feeds (`cat f | node -`,
+  `node < f`), variables, a flag with a separate argument (`node -r x`),
+  `timeout N node`, `xargs node`.
+- **Test isolation.** Six suites (regression, integration,
+  approval-provenance, and, because the allowlist made them switch-sensitive,
+  smoke, compass-v2, compass-fail-closed) unset the switch at the top, so
+  `npm test` passes with it exported.
+- Docs: tool count fifteen (CLAUDE.md), test count from the suite, the README
+  v0.1.0 bullet restored as history.
+
 ### Changed
 - `lib/outcome.js`: `bashOutcome` returns `null` for failure text, for
   `backgroundTaskId` / `timedOutAfterMs` / `backgroundedByUser`, and for
@@ -32,24 +73,49 @@ history.
   detection.
 
 ### Added
-- `T2HELIX_REQUIRE_HUMAN_CONFIRM=1` makes `confirm_pending` refuse approvals
-  that arrive from the model-facing MCP surface (origin `mcp`); the row stays
-  pending for a human. Default off. The refusal the model receives names
-  neither the approval script nor where tokens are listed. Plainly: the switch
-  closes the MCP route only, and it must be set in the environment of every
-  process that serves `confirm_pending`. Against an agent that has a shell and
-  write access to the store it is a speed bump, not a wall. See README.
+- `T2HELIX_REQUIRE_HUMAN_CONFIRM=1` (also `true`/`on`) makes approval an
+  allowlist of origin `cli`: approvals from the model-facing MCP surface
+  (origin `mcp`), with no origin or with any other origin are refused and the
+  row stays pending for a human. Default off. The refusal the model receives
+  names neither the approval script nor where tokens are listed. Plainly: the
+  switch closes every in-process route except the terminal one, and it must
+  be set in the environment of every process that serves `confirm_pending` /
+  `list_pending`, runs the hooks or hosts the Grok adapter. Against an agent
+  that has a shell and write access to the store it is a speed bump, not a
+  wall. See README.
 - `scripts/approve-pending.js`, the human path, recorded as origin `cli`:
   `T2HELIX_DATA_DIR="$HOME/.claude/plugins/data/t2helix-<marketplace>" node scripts/approve-pending.js <token>`.
   `--list` shows each pending request's id, action summary, token and expiry.
-  Every result names the chronicle it used. A run with neither
-  `T2HELIX_DATA_DIR` nor `CLAUDE_PLUGIN_DATA` set, or one naming a directory
-  with no `chronicle.db`, is refused with exit 2 and creates nothing.
-- Bundled WITNESS rule `approve-pending-script`: a shell command naming
-  `approve-pending` is hard-denied, reads included, where the PreToolUse hook
-  runs. A human's own terminal runs no hook, so the human path stays open.
+  Every result past the terminal check names the chronicle it used. A run
+  without `T2HELIX_DATA_DIR`, or one naming a directory with no
+  `chronicle.db`, is refused with exit 2 and creates nothing.
+- The approval script refuses to run (exit 2, one-line reason, no store
+  opened) unless it is at a human's terminal: stdin must be a TTY, and none of
+  `CLAUDECODE`, `CLAUDE_CODE_ENTRYPOINT`, `CLAUDE_CODE_SESSION_ID`,
+  `CLAUDE_PLUGIN_DATA`, `CLAUDE_PLUGIN_ROOT` may be set. `--list` is under the
+  same refusal; `--help` says so. This narrows where it runs; a
+  pseudo-terminal still passes, so it is not proof of a human.
+- Bundled WITNESS rule `approve-pending-script`: a shell command that runs
+  `approve-pending` (node/nodejs/bun/deno on it, or executing it directly, in
+  a command position) is hard-denied where the PreToolUse hook runs; a
+  command that only mentions the file is not. A human's own terminal runs no
+  hook, so the human path stays open.
 - `test/approval-provenance.js` pins the switch, the refusal text, the
   terminal script and the rule; `test/compass-fail-closed.js` seeds the rule.
+
+### Consequences, named
+- **`lib/distill.js`'s success gate now admits more sessions.** Its gate is
+  "real `outcome:success` and not a single detected `outcome:failure`". Bash
+  rows whose only failure signal was text (a quoted or deliberate `FAILED`, a
+  traceback, `Error:` behind an accepted call, including a real crash hidden
+  behind a pipe) used to count as failures and kept a session out; they are
+  now untagged, so such a session can distill a method candidate. Candidates
+  stay quarantined in `method_candidates` and surface nothing until a human
+  promotes one with `promote_method`.
+- **The coupling goes quieter for Bash.** After this change the only Bash
+  `outcome:failure` source is an interrupted run (`interrupted: true`), so
+  `memory:similar-failures` can escalate a Bash command OPEN→PAUSE only on a
+  history of interrupted runs. Edit/Write error strings still tag failure.
 
 ## [0.13.1] — 2026-08-30 — the credential gate stops stalling on code
 

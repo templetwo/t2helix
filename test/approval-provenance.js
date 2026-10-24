@@ -19,6 +19,11 @@ const { spawn, spawnSync } = require('child_process');
 
 const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 't2helix-approval-provenance-'));
 process.env.T2HELIX_DATA_DIR = tmpDir;
+// The human-confirm switch is read from the environment by every process that
+// approves, and this suite asserts the default-off behaviour (or sets the switch
+// per test). An operator who exported it in the shell would otherwise turn the
+// default-off assertions red, so the suite starts from the switch unset.
+delete process.env.T2HELIX_REQUIRE_HUMAN_CONFIRM;
 
 const ch = require('../lib/chronicle');
 const { renderDecision } = require('../lib/decision-message');
@@ -28,10 +33,10 @@ const tests = [];
 function test(name, fn) { tests.push({ name, fn }); }
 
 const HOOK_DIR = path.join(__dirname, '..', 'hooks');
-function runHook(hookFile, payload) {
+function runHook(hookFile, payload, extraEnv = {}) {
   const res = spawnSync('node', [path.join(HOOK_DIR, hookFile)], {
     input: JSON.stringify(payload),
-    env: { ...process.env, T2HELIX_DATA_DIR: tmpDir },
+    env: { ...process.env, T2HELIX_DATA_DIR: tmpDir, ...extraEnv },
     encoding: 'utf8'
   });
   let out = null;
@@ -176,10 +181,12 @@ test('renderDecision: the NOT_EVALUATED banner and next step are their own branc
   assert.ok(/no verdict to override/.test(r.text), r.text);
 });
 
-test('MESSAGE_VERSION names the merged contract, not either branch alone', () => {
+test('MESSAGE_VERSION names the current contract (0.14.0: switch-aware PAUSE next step)', () => {
   const { MESSAGE_VERSION } = require('../lib/decision-message');
-  assert.strictEqual(MESSAGE_VERSION, 'decision-message/0.12.2',
-    'both the token removal and the NOT_EVALUATED branch changed this contract; ' +
+  // 0.12.2 was the union of the token removal and the NOT_EVALUATED branch;
+  // 0.14.0 adds the switch-aware PAUSE next step. One string per contract.
+  assert.strictEqual(MESSAGE_VERSION, 'decision-message/0.14.0',
+    'the switch-aware PAUSE next step changed this contract; ' +
     'one string may not name two contracts');
   // Every rendered message reports the same version, on every branch.
   for (const classification of ['PAUSE', 'WITNESS', 'NOT_EVALUATED', 'OPEN']) {
@@ -351,6 +358,76 @@ test('with the switch set, origin cli → approved, approved_origin recorded cli
   }
 });
 
+// While the switch is on, the origin is an ALLOWLIST of one: only 'cli' (the
+// terminal path) approves. A denylist of 'mcp' let any other label through —
+// an unattributed call, a 'test' or 'codex' origin — so the switch closed one
+// door by name and left the others open. Matching is exact after the usual
+// trim: 'CLI' is not 'cli', because no human surface passes it.
+
+function approveUnderSwitch(origin, switchValue = '1') {
+  // An explicit undefined would take the default '1', so 'unset' names the unset case.
+  if (switchValue === 'unset') delete process.env.T2HELIX_REQUIRE_HUMAN_CONFIRM;
+  else process.env.T2HELIX_REQUIRE_HUMAN_CONFIRM = switchValue;
+  try {
+    const sid = 'ap-allow-' + String(origin) + '-' + Date.now() + '-' + Math.random().toString(36).slice(2, 8);
+    const p = ch.createPendingConfirmation({ session_id: sid, action_summary: 'allow-' + sid });
+    const args = { token: p.token };
+    if (origin !== undefined) args.origin = origin;
+    const r = ch.approveConfirmation(args);
+    const row = ch.listPendingConfirmations({ session_id: sid, limit: 10 })[0];
+    return { r, row, token: p.token };
+  } finally {
+    delete process.env.T2HELIX_REQUIRE_HUMAN_CONFIRM;
+  }
+}
+
+test('with the switch set, an unattributed approval (no origin) → refused, row still pending', () => {
+  const { r, row } = approveUnderSwitch(undefined);
+  assert.strictEqual(r.ok, false, `an unattributed approval went through under the switch: ${JSON.stringify(r)}`);
+  assert.strictEqual(r.pending, true);
+  assert.ok(/T2HELIX_REQUIRE_HUMAN_CONFIRM/.test(String(r.error)), `the refusal must name the switch: ${r.error}`);
+  assert.strictEqual(row.status, 'pending');
+  assert.strictEqual(row.approved_origin, null);
+});
+
+test('with the switch set, any origin other than cli (test, codex, grok, sse, CLI, blank) → refused, row still pending', () => {
+  for (const origin of ['test', 'codex', 'grok', 'sse', 'CLI', '', '   ', 'cli-ish', 'unattributed']) {
+    const { r, row } = approveUnderSwitch(origin);
+    assert.strictEqual(r.ok, false, `origin ${JSON.stringify(origin)} approved under the switch`);
+    assert.strictEqual(r.pending, true, `origin ${JSON.stringify(origin)}: refusal must say still pending`);
+    assert.strictEqual(row.status, 'pending', `origin ${JSON.stringify(origin)}: row left ${row.status}`);
+  }
+});
+
+test('with the switch set to true or on, cli still approves and mcp is still refused (every spelling of on)', () => {
+  for (const v of ['1', 'true', 'on', ' ON ']) {
+    assert.strictEqual(approveUnderSwitch('cli', v).r.ok, true, `cli refused with switch=${JSON.stringify(v)}`);
+    assert.strictEqual(approveUnderSwitch('mcp', v).r.ok, false, `mcp approved with switch=${JSON.stringify(v)}`);
+  }
+});
+
+test('with the switch unset (or off), every origin approves exactly as before and is recorded as given', () => {
+  for (const sw of ['unset', '0', 'off', '']) {
+    for (const [origin, recorded] of [[undefined, 'unattributed'], ['test', 'test'], ['codex', 'codex'], ['mcp', 'mcp'], ['cli', 'cli'], ['CLI', 'CLI']]) {
+      const { r, row } = approveUnderSwitch(origin, sw);
+      assert.strictEqual(r.ok, true, `switch=${JSON.stringify(sw)} origin=${JSON.stringify(origin)} refused: ${JSON.stringify(r)}`);
+      assert.strictEqual(row.status, 'approved');
+      assert.strictEqual(row.approved_origin, recorded);
+    }
+  }
+});
+
+test('with the switch set, the refusal for a non-cli origin names no script, listing or token, and is not MCP-specific', () => {
+  for (const origin of [undefined, 'test', 'mcp']) {
+    const { r, token } = approveUnderSwitch(origin);
+    const msg = String(r.error);
+    assert.ok(!/approve-pending|scripts\//.test(msg), `the refusal names the approval script: ${msg}`);
+    assert.ok(!/list_pending/.test(msg), `the refusal points at the token listing: ${msg}`);
+    assert.ok(!msg.includes(token), 'the refusal carries the token');
+    assert.ok(!/^MCP-origin/.test(msg), `the refusal is worded as if only MCP were refused: ${msg}`);
+  }
+});
+
 test('with the switch set, the mcp-origin refusal says a human approves outside the agent session, and names no script, listing or token', () => {
   process.env.T2HELIX_REQUIRE_HUMAN_CONFIRM = '1';
   try {
@@ -403,9 +480,13 @@ test('confirm_pending over MCP, switch set in the server\'s env: refused and lef
 const APPROVE_SCRIPT = path.join(__dirname, '..', 'scripts', 'approve-pending.js');
 const TMP_CHRONICLE = path.join(tmpDir, 'chronicle.db');
 
+// The Claude Code session markers the script refuses to run under. This suite
+// may itself run inside an agent session, so the human-path env strips them.
+const SESSION_MARKERS = ['CLAUDECODE', 'CLAUDE_CODE_ENTRYPOINT', 'CLAUDE_CODE_SESSION_ID', 'CLAUDE_PLUGIN_DATA', 'CLAUDE_PLUGIN_ROOT'];
+
 function approveEnv(overrides = {}) {
   const env = { ...process.env, T2HELIX_DATA_DIR: tmpDir };
-  delete env.CLAUDE_PLUGIN_DATA;
+  for (const m of SESSION_MARKERS) delete env[m];
   delete env.T2HELIX_REQUIRE_HUMAN_CONFIRM;
   for (const [k, v] of Object.entries(overrides)) {
     if (v === undefined) delete env[k];
@@ -414,19 +495,87 @@ function approveEnv(overrides = {}) {
   return env;
 }
 
-function runApprove(args, env) {
-  const res = spawnSync(process.execPath, [APPROVE_SCRIPT, ...args], { env, encoding: 'utf8' });
+// { tty: true } runs the script on a pseudo-terminal (python3's pty module,
+// present on macOS and the ubuntu CI runner), standing in for a human's
+// terminal: the script refuses a non-TTY stdin. Without it, stdin is a pipe,
+// which is what an agent's shell tool gives a child. If python3 is missing the
+// helper throws, so a tty test FAILS rather than skipping silently.
+const PTY_RUNNER = 'import os, pty, sys\nst = pty.spawn(sys.argv[1:])\nsys.exit(os.waitstatus_to_exitcode(st))';
+function runApprove(args, env, { tty = false } = {}) {
+  const res = tty
+    ? spawnSync('python3', ['-c', PTY_RUNNER, process.execPath, APPROVE_SCRIPT, ...args], { env, encoding: 'utf8', input: '' })
+    : spawnSync(process.execPath, [APPROVE_SCRIPT, ...args], { env, encoding: 'utf8' });
+  if (tty && res.error) throw new Error(`pseudo-terminal runner unavailable (python3): ${res.error.message}`);
+  const stdout = (res.stdout || '').replace(/\r\n/g, '\n');
   let out = null;
-  try { out = JSON.parse(res.stdout || ''); }
-  catch { out = { _unparseable: res.stdout }; }
-  return { code: res.status, out, raw: `${res.stdout || ''}${res.stderr || ''}` };
+  try { out = JSON.parse(stdout || ''); }
+  catch { out = { _unparseable: stdout }; }
+  return { code: res.status, out, raw: `${stdout}${res.stderr || ''}` };
 }
 
-test('approve-pending.js: a bare run (neither T2HELIX_DATA_DIR nor CLAUDE_PLUGIN_DATA) is refused with exit 2, names the path it resolved, and creates nothing', () => {
+// ── 5a. The script refuses to run where no human is at a terminal ───────────
+//
+// Provenance in the script itself, not only in the gate in front of it: a
+// non-TTY stdin, or any Claude Code session marker in the environment, and it
+// exits 2 with a one-line reason before opening any store.
+
+function storeSnapshot() {
+  const f = TMP_CHRONICLE;
+  return fs.existsSync(f) ? fs.statSync(f).mtimeMs + ':' + fs.statSync(f).size : 'absent';
+}
+
+test('approve-pending.js with stdin piped (not a TTY): <token> and --list exit 2, row still pending, no token printed', () => {
+  const sid = 'ap-notty-' + Date.now();
+  const p = ch.createPendingConfirmation({ session_id: sid, action_summary: 'notty-' + Date.now() });
+  for (const args of [[p.token], ['--list']]) {
+    const r = runApprove(args, approveEnv());
+    assert.strictEqual(r.code, 2, `${JSON.stringify(args)} piped must exit 2: ${r.raw}`);
+    assert.strictEqual(r.out.ok, false);
+    assert.ok(/terminal/i.test(r.out.error), `the refusal must say why: ${r.out.error}`);
+    assert.ok(!r.raw.includes(p.token), 'the refusal must not print a token');
+    assert.strictEqual(r.raw.trim().split('\n').length, 1, `the refusal is one line: ${r.raw}`);
+  }
+  const row = ch.listPendingConfirmations({ session_id: sid, limit: 10 })[0];
+  assert.strictEqual(row.status, 'pending', 'a refused run approves nothing');
+});
+
+test('approve-pending.js with stdin piped opens no store: an empty named directory stays empty', () => {
+  const empty = fs.mkdtempSync(path.join(os.tmpdir(), 't2helix-approve-notty-'));
+  const r = runApprove(['0123456789abcdef'], approveEnv({ T2HELIX_DATA_DIR: empty }));
+  assert.strictEqual(r.code, 2, r.raw);
+  assert.ok(/terminal/i.test(r.out.error), r.raw);
+  assert.deepStrictEqual(fs.readdirSync(empty), []);
+});
+
+test('approve-pending.js on a TTY but with any Claude Code session marker set: exit 2, row still pending, store untouched', () => {
+  const sid = 'ap-marker-' + Date.now();
+  const p = ch.createPendingConfirmation({ session_id: sid, action_summary: 'marker-' + Date.now() });
+  const before = storeSnapshot();
+  for (const marker of SESSION_MARKERS) {
+    for (const args of [[p.token], ['--list']]) {
+      const r = runApprove(args, approveEnv({ [marker]: '1' }), { tty: true });
+      assert.strictEqual(r.code, 2, `${marker} ${JSON.stringify(args)} must exit 2: ${r.raw}`);
+      assert.ok(new RegExp(marker).test(r.out.error), `the refusal must name the marker ${marker}: ${r.raw}`);
+      assert.ok(!r.raw.includes(p.token), `${marker}: the refusal printed the token`);
+    }
+  }
+  assert.strictEqual(storeSnapshot(), before, 'a refused run must not write the store');
+  assert.strictEqual(ch.listPendingConfirmations({ session_id: sid, limit: 10 })[0].status, 'pending');
+});
+
+test('approve-pending.js --help names the terminal refusal and touches no store', () => {
+  const empty = fs.mkdtempSync(path.join(os.tmpdir(), 't2helix-approve-help-'));
+  const r = runApprove(['--help'], approveEnv({ T2HELIX_DATA_DIR: empty }));
+  assert.strictEqual(r.code, 0, r.raw);
+  assert.ok(/terminal/i.test(r.raw) && /CLAUDECODE/.test(r.raw), `--help must say where it refuses to run: ${r.raw}`);
+  assert.deepStrictEqual(fs.readdirSync(empty), []);
+});
+
+test('approve-pending.js: a bare run (no T2HELIX_DATA_DIR) on a terminal is refused with exit 2, names the path it resolved, and creates nothing', () => {
   const home = fs.mkdtempSync(path.join(os.tmpdir(), 't2helix-approve-home-'));
   const env = approveEnv({ T2HELIX_DATA_DIR: undefined, HOME: home });
   for (const args of [['0123456789abcdef'], ['--list'], []]) {
-    const r = runApprove(args, env);
+    const r = runApprove(args, env, { tty: true });
     assert.strictEqual(r.code, 2, `bare run ${JSON.stringify(args)} must exit 2: ${r.raw}`);
     assert.strictEqual(r.out.ok, false);
     assert.strictEqual(r.out.chronicle, path.join(home, '.t2helix-data', 'chronicle.db'),
@@ -438,7 +587,7 @@ test('approve-pending.js: a bare run (neither T2HELIX_DATA_DIR nor CLAUDE_PLUGIN
 
 test('approve-pending.js: a named directory with no chronicle.db is refused with exit 2 and left empty', () => {
   const empty = fs.mkdtempSync(path.join(os.tmpdir(), 't2helix-approve-empty-'));
-  const r = runApprove(['0123456789abcdef'], approveEnv({ T2HELIX_DATA_DIR: empty }));
+  const r = runApprove(['0123456789abcdef'], approveEnv({ T2HELIX_DATA_DIR: empty }), { tty: true });
   assert.strictEqual(r.code, 2, r.raw);
   assert.strictEqual(r.out.ok, false);
   assert.strictEqual(r.out.chronicle, path.join(empty, 'chronicle.db'));
@@ -448,7 +597,9 @@ test('approve-pending.js: a named directory with no chronicle.db is refused with
 test('approve-pending.js <token> with the switch set: approves as origin cli and names the chronicle it wrote', () => {
   const sid = 'ap-script-ok-' + Date.now();
   const p = ch.createPendingConfirmation({ session_id: sid, action_summary: 'script-ok-' + Date.now() });
-  const r = runApprove([p.token], approveEnv({ T2HELIX_REQUIRE_HUMAN_CONFIRM: '1' }));
+  // Positive control for the terminal refusal: on a pseudo-terminal with no
+  // session marker, the script proceeds to the token lookup and approves.
+  const r = runApprove([p.token], approveEnv({ T2HELIX_REQUIRE_HUMAN_CONFIRM: '1' }), { tty: true });
   assert.strictEqual(r.code, 0, r.raw);
   assert.strictEqual(r.out.ok, true);
   assert.strictEqual(r.out.origin, 'cli');
@@ -460,7 +611,7 @@ test('approve-pending.js <token> with the switch set: approves as origin cli and
 
 test('approve-pending.js: an unknown token or a missing argument exits 1 and still names the chronicle', () => {
   for (const args of [['ffffffffffffffff'], []]) {
-    const r = runApprove(args, approveEnv());
+    const r = runApprove(args, approveEnv(), { tty: true });
     assert.strictEqual(r.code, 1, `${JSON.stringify(args)}: ${r.raw}`);
     assert.strictEqual(r.out.ok, false);
     assert.strictEqual(r.out.chronicle, TMP_CHRONICLE);
@@ -472,7 +623,7 @@ test('approve-pending.js --list: each pending request with its id, action summar
   const a = ch.createPendingConfirmation({ session_id: sid, action_summary: 'list-a-' + Date.now(), rule_matched: 'credential-paste' });
   const b = ch.createPendingConfirmation({ session_id: sid, action_summary: 'list-b-' + Date.now() });
   ch.approveConfirmation({ token: b.token, origin: 'cli' });
-  const r = runApprove(['--list'], approveEnv());
+  const r = runApprove(['--list'], approveEnv(), { tty: true });
   assert.strictEqual(r.code, 0, r.raw);
   assert.strictEqual(r.out.chronicle, TMP_CHRONICLE);
   const mine = (r.out.pending || []).filter(e => e.token === a.token || e.token === b.token);
@@ -500,9 +651,84 @@ function agentApproveCommands(token) {
     `node ${APPROVE_SCRIPT} ${token}`,
     `node /Users/someone/.claude/plugins/cache/templetwo-t2helix/t2helix/abc/scripts/approve-pending.js ${token}`,
     `T2HELIX_DATA_DIR="$HOME/.claude/plugins/data/t2helix-templetwo-t2helix" node scripts/approve-pending.js --list`,
-    `cd /tmp && node ./Scripts/APPROVE-PENDING.js ${token}`
+    `cd /tmp && node ./Scripts/APPROVE-PENDING.js ${token}`,
+    `/opt/homebrew/bin/node scripts/approve-pending.js ${token}`,
+    `./scripts/approve-pending.js ${token}`,
+    `git status; ./scripts/approve-pending.js ${token}`,
+    `bash -c "node scripts/approve-pending.js ${token}"`,
+    `echo $(node scripts/approve-pending.js --list)`,
+    `env T2HELIX_DATA_DIR=/tmp/x node --no-warnings scripts/approve-pending.js ${token}`,
+    `cd /tmp\nnode scripts/approve-pending ${token}`,
+    `if true; then node scripts/approve-pending.js ${token}; fi`,
+    `for t in a; do ./scripts/approve-pending.js ${token}; done`,
+    `{ node scripts/approve-pending.js ${token}; }`,
+    `! node scripts/approve-pending.js ${token}`,
+    `if node scripts/approve-pending.js ${token}; then :; fi`,
+    `while node scripts/approve-pending.js ${token}; do :; done`,
+    `until ./scripts/approve-pending.js ${token}; do :; done`,
+    // A closing parenthesis before the script must not hide it: ")" is a
+    // command-position start too (security review of the class change).
+    `X=$(true) node approve-pending ${token}`,
+    `node "./a(1)/approve-pending.js" ${token}`,
+    `"./d(x)/approve-pending.js" ${token}`,
+    // Bare-name execution in command position (found off PATH): security
+    // review of the path-required form.
+    `PATH=scripts:$PATH approve-pending.js ${token}`,
+    `approve-pending ${token}`
   ];
 }
+
+// The rule is narrowed to INVOCATION shapes (0.14.0, review D3). Before, any
+// command naming the file was a WITNESS with no override, so staging, logging
+// or describing the file from an agent session was hard-denied too. These are
+// mentions, not runs, and must stay open. Residual, stated: a quoted string
+// that itself begins a line with an invocation (a multi-line -m or --body whose
+// line starts "node .../approve-pending.js") still denies; write such text
+// through a file (git commit -F, gh pr create --body-file).
+const AGENT_MENTION_COMMANDS = [
+  'git add scripts/approve-pending.js',
+  'git add scripts/ test/ lib/',
+  'git log --oneline -- scripts/approve-pending.js',
+  'git commit -m "docs: comment in scripts/approve-pending.js"',
+  'git commit -m "narrow the approve-pending-script rule"',
+  'gh pr create --title "rule" --body "touches scripts/approve-pending.js and the approve-pending-script rule"',
+  'git diff HEAD~1 -- scripts/approve-pending.js',
+  'git show 98e5051:scripts/approve-pending.js',
+  // A bare name in parentheses is a mention, not a run: direct execution
+  // needs a path (a "/"), and nothing executes a bare name off PATH here.
+  'echo (approve-pending)',
+  'git log -- scripts/approve-pending.js'
+];
+
+test('compass: a command that only mentions approve-pending (git add, git log --, git commit -m, gh pr create --body) is not denied by approve-pending-script, under legacy, V2 shadow and V2 enforce', () => {
+  const prev = process.env.T2HELIX_COMPASS_V2;
+  try {
+    for (const command of AGENT_MENTION_COMMANDS) {
+      const payload = { tool_name: 'Bash', tool_input: { command } };
+      const legacy = compass.classify(payload);
+      assert.notStrictEqual(legacy.rule_id, 'approve-pending-script', `legacy still denies a mention: ${command}`);
+      assert.strictEqual(legacy.classification, 'OPEN', `legacy did not clear a mention: ${command} -> ${legacy.classification}/${legacy.rule_id}`);
+      for (const mode of ['shadow', 'enforce']) {
+        process.env.T2HELIX_COMPASS_V2 = mode;
+        const v2 = classifyV2(payload, {});
+        assert.notStrictEqual(v2.active.classification, 'WITNESS', `V2 ${mode} denies a mention: ${command}`);
+      }
+    }
+  } finally {
+    if (prev === undefined) delete process.env.T2HELIX_COMPASS_V2;
+    else process.env.T2HELIX_COMPASS_V2 = prev;
+  }
+});
+
+test('PreToolUse: git add of the approval script is not hard-denied', () => {
+  const r = runHook('pre-tool-use.js', {
+    session_id: 'ap-mention-' + Date.now(),
+    tool_name: 'Bash',
+    tool_input: { command: 'git add scripts/approve-pending.js' }
+  });
+  const decision = r.out.hookSpecificOutput && r.out.hookSpecificOutput.permissionDecision;
+  assert.notStrictEqual(decision, 'deny', `the hook denied a mention: ${JSON.stringify(r.out)}`);
+});
 
 test('compass: a shell command that runs approve-pending is WITNESS under legacy, V2 shadow and V2 enforce (real minted token)', () => {
   const p = ch.createPendingConfirmation({ session_id: 'ap-witness-' + Date.now(), action_summary: 'witness-' + Date.now() });
@@ -538,6 +764,133 @@ test('PreToolUse: a Bash call that runs approve-pending is hard-denied and mints
   assert.ok(denyReason(r).includes('approve-pending-script'), denyReason(r));
   assert.strictEqual(ch.listPendingConfirmations({ session_id: sid, limit: 10 }).length, 0,
     'a WITNESS deny mints no confirm token, so there is nothing to approve past it');
+});
+
+// ── 7. Model-facing text follows the switch ─────────────────────────────────
+//
+// With the switch on, the model cannot approve, so every surface that used to
+// point it at confirm_pending (or at the listing that carries the token) would
+// be pointing it at a refusal while handing it a credential. Under the switch:
+// list_pending withholds tokens, and the deny/coupling/adapter text says the
+// approval is a human's from a terminal — naming no script, path or token.
+// Switch off: every surface is byte-for-byte what it was.
+
+const { escalateByMemory } = require('../lib/coupling');
+const grok = require('../lib/grok-adapter');
+
+function withSwitch(value, fn) {
+  const prev = process.env.T2HELIX_REQUIRE_HUMAN_CONFIRM;
+  if (value === 'unset') delete process.env.T2HELIX_REQUIRE_HUMAN_CONFIRM;
+  else process.env.T2HELIX_REQUIRE_HUMAN_CONFIRM = value;
+  const restore = () => {
+    if (prev === undefined) delete process.env.T2HELIX_REQUIRE_HUMAN_CONFIRM;
+    else process.env.T2HELIX_REQUIRE_HUMAN_CONFIRM = prev;
+  };
+  let out;
+  try { out = fn(); } catch (e) { restore(); throw e; }
+  if (out && typeof out.then === 'function') return out.finally(restore);
+  restore();
+  return out;
+}
+
+function assertHumanTerminalText(text, label) {
+  assert.ok(/human/i.test(text) && /terminal/i.test(text), `${label}: must say a human approves from a terminal: ${text}`);
+  assert.ok(!/confirm_pending/.test(text), `${label}: still points the model at confirm_pending: ${text}`);
+  assert.ok(!/list_pending/.test(text), `${label}: still points the model at the token listing: ${text}`);
+  assert.ok(!/approve-pending|scripts\/|\.js\b|\/Users\/|~\//.test(text), `${label}: names a script or a path: ${text}`);
+}
+
+test('list_pending over MCP, switch unset: entries carry their token (unchanged)', async (client) => {
+  const sid = 'ap-lp-off-' + Date.now();
+  const p = ch.createPendingConfirmation({ session_id: sid, action_summary: 'lp-off-' + Date.now() });
+  const r = await call(client, 'list_pending', { session_id: sid, limit: 10 });
+  assert.strictEqual(r.count, 1);
+  assert.strictEqual(r.entries[0].token, p.token, 'with the switch off the listing is unchanged');
+  assert.strictEqual(r.note, undefined, 'with the switch off the listing carries no extra line');
+});
+
+test('list_pending over MCP, switch set in the server\'s env: rows returned with the token withheld and a line saying a human approves from the terminal', async () => {
+  const guarded = makeClient({ T2HELIX_REQUIRE_HUMAN_CONFIRM: '1' });
+  try {
+    await initialize(guarded);
+    const sid = 'ap-lp-on-' + Date.now();
+    const p = ch.createPendingConfirmation({ session_id: sid, action_summary: 'lp-on-' + Date.now() });
+    const approvedSid = sid + '-approved';
+    const q = ch.createPendingConfirmation({ session_id: approvedSid, action_summary: 'lp-on-appr-' + Date.now() });
+    assert.strictEqual(ch.approveConfirmation({ token: q.token, origin: 'cli' }).ok, true);
+    const raw = await guarded.request('tools/call', { name: 'list_pending', arguments: { limit: 100 } });
+    const text = raw.result.content[0].text;
+    assert.ok(!text.includes(p.token), 'a pending token reached the model under the switch');
+    assert.ok(!text.includes(q.token), 'an approved token reached the model under the switch');
+    const r = JSON.parse(text);
+    const mine = r.entries.find(e => e.session_id === sid);
+    assert.ok(mine, 'the row itself is still listed');
+    assert.strictEqual(mine.id, p.id, 'the non-secret id is still listed');
+    assert.ok(!('token' in mine) || mine.token === null, `token field still populated: ${JSON.stringify(mine)}`);
+    assert.strictEqual(mine.token_withheld, true);
+    assert.ok(r.entries.every(e => !e.token), 'some entry still carries a token');
+    assert.ok(typeof r.note === 'string', 'the listing must say why the token is absent');
+    assertHumanTerminalText(r.note, 'list_pending note');
+  } finally {
+    await guarded.close();
+  }
+});
+
+test('memory coupling reason: switch unset names confirm_pending (unchanged); switch set says a human approves from a terminal', () => {
+  const base = { classification: 'OPEN', rule_id: null, reason: null };
+  const similar = [{ id: 901, tags: ['outcome:failure'] }, { id: 902, tags: ['outcome:failure'] }, { id: 903, tags: ['outcome:failure'] }];
+  const off = withSwitch('unset', () => escalateByMemory(base, similar));
+  assert.strictEqual(off.classification, 'PAUSE');
+  assert.ok(off.reason.endsWith('if intentional, override via confirm_pending.'), off.reason);
+  const on = withSwitch('1', () => escalateByMemory(base, similar));
+  assert.strictEqual(on.classification, 'PAUSE');
+  assert.ok(on.reason.includes('3/3') && on.reason.includes('#901'), `stats lost: ${on.reason}`);
+  assertHumanTerminalText(on.reason, 'coupling reason');
+});
+
+test('renderDecision PAUSE: switch unset names list_pending (unchanged); switch set says a human approves from a terminal', () => {
+  const decision = { classification: 'PAUSE', rule_id: 'credential-paste', reason: 'cred' };
+  const opts = { action_summary: 'echo api_key=zzz', token: 'deadbeefcafe1234', pending_id: 42 };
+  const off = withSwitch('unset', () => renderDecision(decision, opts));
+  assert.ok(off.text.includes('list_pending shows what is waiting'), off.text);
+  const on = withSwitch('1', () => renderDecision(decision, opts));
+  assert.ok(on.text.includes('#42'), `the request id must still be named: ${on.text}`);
+  assert.ok(/retry/i.test(on.text), on.text);
+  assert.ok(!on.text.includes('deadbeefcafe1234'));
+  assertHumanTerminalText(on.text, 'PAUSE next step');
+});
+
+test('PreToolUse PAUSE deny, switch set in the hook\'s env: says a human approves from a terminal; still mints the request', () => {
+  const sid = 'ap-hook-switch-' + Date.now();
+  const r = runHook('pre-tool-use.js', {
+    session_id: sid,
+    tool_name: 'Bash',
+    tool_input: { command: 'echo aws_secret=abc' }
+  }, { T2HELIX_REQUIRE_HUMAN_CONFIRM: '1' });
+  assert.strictEqual(r.out.hookSpecificOutput.permissionDecision, 'deny');
+  const pending = ch.listPendingConfirmations({ session_id: sid, limit: 10 });
+  assert.strictEqual(pending.length, 1, 'the request is still minted for the human to approve');
+  const reason = denyReason(r);
+  assert.ok(!reason.includes(pending[0].token));
+  assertHumanTerminalText(reason, 'hook deny reason');
+});
+
+test('grok adapter PAUSE: switch unset returns the token and names confirm_pending (unchanged); switch set withholds the token and says a human approves from a terminal', async () => {
+  const offSid = 'ap-grok-off-' + Date.now();
+  const off = await withSwitch('unset', () => grok.grokWitness('echo aws_secret=abc', { session_id: offSid }));
+  assert.strictEqual(off.classification, 'PAUSE');
+  assert.ok(off.pending_token, 'with the switch off the adapter still returns the token');
+  assert.ok(/confirm_pending\(token\)/.test(off.note), off.note);
+
+  const onSid = 'ap-grok-on-' + Date.now();
+  const on = await withSwitch('1', () => grok.grokWitness('echo aws_secret=abc', { session_id: onSid }));
+  assert.strictEqual(on.classification, 'PAUSE');
+  assert.strictEqual(on.blocked, true);
+  const minted = ch.listPendingConfirmations({ session_id: onSid, limit: 10 });
+  assert.strictEqual(minted.length, 1, 'the request is still minted for the human');
+  assert.strictEqual(on.pending_token, null, 'the adapter handed the token to the model under the switch');
+  assert.ok(!JSON.stringify(on).includes(minted[0].token), 'the token is somewhere in the adapter result under the switch');
+  assertHumanTerminalText(on.note, 'grok adapter note');
 });
 
 async function main() {

@@ -33,6 +33,11 @@ const { spawnSync } = require('child_process');
 
 const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 't2helix-failclosed-'));
 process.env.T2HELIX_DATA_DIR = tmpDir;
+// This suite approves tokens without the terminal origin, which the human-confirm
+// switch refuses (only origin cli approves while it is on). It asserts the
+// default-off behaviour, so it starts from the switch unset even when an
+// operator exported it in the shell.
+delete process.env.T2HELIX_REQUIRE_HUMAN_CONFIRM;
 
 const ch = require('../lib/chronicle');
 const compass = require('../lib/compass');
@@ -242,7 +247,11 @@ const ADVERSARIAL_SEEDS = {
   'drop-table-or-db':   { trigger: 'drop table ', tail: 'users' },
   'deploy-prod':        { trigger: 'kubectl apply ', tail: '--namespace prod' },
   'no-verify':          { trigger: 'git commit ', tail: '--no-verify' },
-  'approve-pending-script': { trigger: 'approve-', tail: 'pending' },
+  // Narrowed to invocations in 0.14.0: every separator is a candidate command
+  // position, so the trigger repeats one. The tail is the script name with a
+  // suffix the rule does not accept, so even behind a separator (blocked-tail)
+  // the pad still does not match and the cost measured is the cost of failing.
+  'approve-pending-script': { trigger: '; node ', tail: 'approve-pending.txt' },
   'credential-paste':   { trigger: 'password=', tail: 'hunter2hunter2' },
   'grok-direct-mutate': { trigger: 'raw-mutate ', tail: 'raw-mutate' },
   // Not bundled — this repo's own .t2helix/policy.json. Seeded anyway: repo-local

@@ -15,7 +15,7 @@ no build step and no transpile; the runtime is plain CommonJS on Node 20–26.
 ## Commands
 
 ```bash
-npm test            # full suite: smoke + regression + integration (184 tests)
+npm test            # full suite: all 20 test files in package.json (661 tests at 0.14.0)
 npm run smoke       # lib unit tests (chronicle CRUD, FTS, compass rules, coupling, redaction)
 npm run regression  # MCP tool contract over stdio JSON-RPC
 npm run integration # spawns the real hooks; asserts shipped wiring + PAUSE override loop + scrub
@@ -120,7 +120,9 @@ ship explicit-only, measure the generated-vs-promoted ratio first.
 - `WITNESS` — **hard deny, no override**: `rm -rf` wildcards, `git push --force`,
   `git reset --hard`, `drop table/database`, prod-mutating `kubectl/terraform/helm/aws/
   gcloud` (read-only verbs like get/list/describe are deliberately *not* gated),
-  `--no-verify`, a shell command naming `approve-pending` (the human approval path).
+  `--no-verify`, a shell command that runs `approve-pending` (the human approval path;
+  invocations only since 0.14.0, so `git add` / `git log --` / a commit message that
+  mentions the file is not denied).
   Changing these requires editing `compass-rules.json`.
 - `PAUSE` — **soft deny with a single-use token override** (credential-shaped patterns).
   See the override flow below.
@@ -141,15 +143,21 @@ model-facing MCP surface is legible as one. The retry consumes the approval atom
 (`consumeApproval` is a compare-and-swap `status='approved' → 'used'`, so a token can
 never be double-spent across racing hook processes), and re-logs the call as `OPEN`.
 
-`T2HELIX_REQUIRE_HUMAN_CONFIRM=1` (default off) makes `approveConfirmation` refuse origin
-`mcp` and leave the row pending; a human approves outside the agent session with
+`T2HELIX_REQUIRE_HUMAN_CONFIRM=1` (default off; also `true`/`on`, read by
+`lib/human-confirm.js`) makes `approveConfirmation` an allowlist of one origin, `cli`:
+`mcp`, `unattributed` and every other origin is refused and the row stays pending. Under
+the switch `list_pending` withholds tokens, and the PAUSE deny text, the coupling reason
+and the Grok adapter say approval is a human's from a terminal (no script, path or token).
+Each of those reads the switch in its own process, so it must be set wherever the MCP
+server, the hooks and the adapter run. A human approves outside the agent session with
 `T2HELIX_DATA_DIR="$HOME/.claude/plugins/data/t2helix-<marketplace>" node
 scripts/approve-pending.js <token>` (origin `cli`; `--list` shows pending tokens; a bare
-run is refused with exit 2). It closes the MCP route only and is read in each process
-that serves `confirm_pending`. Against an agent with a shell and write access to the
+run is refused with exit 2, and so is any run without a TTY stdin or with a Claude Code
+session marker such as `CLAUDECODE` set, before any store is opened). It closes every in-process route except the terminal one.
+Against an agent with a shell and write access to the
 store it is a speed bump, not a wall: the refusal text names neither the script nor the
-listing, and the `approve-pending-script` WITNESS rule denies a shell command naming the
-script where the PreToolUse hook runs.
+listing, and the `approve-pending-script` WITNESS rule denies a shell command that runs
+the script where the PreToolUse hook runs.
 
 ## The fail-open / fail-safe contract (the invariant that governs every hook)
 
@@ -286,11 +294,11 @@ fails-open inside the 5s hook budget instead of being killed mid-write) and
 ## MCP server
 
 `mcp/server.js` is hand-rolled JSON-RPC (no SDK transport abstraction beyond the schema
-types) exposing eighteen tools — `recall`, `record`, `record_method`, `set_goal`,
-`open_thread`, `resolve_thread`, `get_state`, `recall_compass`, `confirm_pending`,
-`list_pending`, (v0.4) `list_method_candidates`, `promote_method`,
-`dismiss_method_candidate`, and (v0.12) `dry_run_compass`, `explain_compass`,
-`arm_safe_repeat`, `revoke_safe_repeat`, `list_safe_repeat`. Each maps to a
+types) exposing fifteen tools (the 15 entries of `TOOLS` in `mcp/server.js` at 0.14.0) —
+`recall`, `record`, `record_method`, `set_goal`, `open_thread`, `resolve_thread`,
+`get_state`, `recall_compass`, `confirm_pending`, `list_pending`, (v0.4)
+`list_method_candidates`, `promote_method`, `dismiss_method_candidate`, and (v0.12)
+`dry_run_compass`, `explain_compass`. Safe-repeat leases (`lib/safe-repeat.js`) are not exposed as MCP tools. Each maps to a
 `lib/chronicle.js` function. Default transport is `stdio` (the plugin path);
 `--transport sse --port 3742` serves any other MCP client from the same data dir. Both can
 run simultaneously. When adding a tool, update `TOOLS` (schema), the dispatch switch, and

@@ -226,10 +226,84 @@ const BENIGN_SHAPES = {
   // shape and belongs in this list rather than in the exploit set.
   'aperiodic-hex-run': n => 'echo ' + APERIODIC.hexRun(n),
   'aperiodic-alnum-run': n => 'echo ' + APERIODIC.alnum36Run(n),
-  'aperiodic-mixedcase-run': n => 'echo ' + APERIODIC.alnum62Run(n)
+  'aperiodic-mixedcase-run': n => 'echo ' + APERIODIC.alnum62Run(n),
+  // ── RUNS OF COMMAND-POSITION STARTS (0.14.0 re-review) ───────────────────
+  //
+  // The narrowed approval-script rule treats "(" and "$(" as command-position
+  // starts. Its first form let the classes AFTER a start accept "(", so every
+  // "(" in an unbroken run restarted a scan to the end: 3.6s at 64KB, killed at
+  // 800KB, and at the real hook a 120KB pad took 14s against the 8s budget and
+  // hid credential-paste behind NOT_EVALUATED. Subshells are ordinary shell,
+  // so this is a benign shape. Its "$(" sibling is pinned in its own test
+  // below, on the rules leg only: see the note there.
+  'paren-run': n => 'echo ' + pad('(', n)
 };
 
 const SIZES = [20000, 80000, 150000, 180000, 200000, 400000, 800000];
+
+// "$(" runs: the rules leg is held linear here at every size. The WHOLE gate is
+// not asserted for this shape because its cost there is lib/action-ir's
+// parseToIR, which is pre-existing and untouched by this release: measured on
+// main 8d75894, classifyV2 on 'echo ' + "$(" x n took 0.9s at 75KB, 1.7s at
+// 150KB and 4.0s at 300KB with legacy classify at 3ms (this branch: 0.87s,
+// 1.6s, 4.2s). Putting the shape in BENIGN_SHAPES would fail the gate arm on
+// main and on this branch alike and assert nothing this release regressed;
+// that cost is named as its own finding instead.
+test('a "$(" run: the rules leg (incl. the approval-script rule) stays linear at every size', () => {
+  const rule = compass.loadRules().find(r => r.id === 'approve-' + 'pending-script');
+  const bad = [];
+  let worst = 0, worstLabel = '';
+  for (const n of SIZES) {
+    const command = 'echo ' + pad('$(', n);
+    const t0 = Date.now();
+    compass.ruleTest(rule, command);
+    const ruleMs = Date.now() - t0;
+    const t1 = Date.now();
+    const legacy = compass.classify({ tool_name: 'Bash', tool_input: { command } }, {});
+    const rulesMs = Date.now() - t1;
+    if (rulesMs > worst) { worst = rulesMs; worstLabel = `${n}b`; }
+    if (ruleMs > 250) bad.push(`${n}b: approval-script rule ${ruleMs}ms > 250ms`);
+    if (rulesMs > 250) bad.push(`${n}b: rules leg ${rulesMs}ms > 250ms`);
+    if (legacy.classification === compass.NOT_EVALUATED) bad.push(`${n}b: legacy leg NOT_EVALUATED`);
+  }
+  console.log(`        [note] "$(" run: slowest rules leg ${worstLabel} ${worst}ms`);
+  assert.deepStrictEqual(bad, [], bad.join(' | '));
+});
+
+// Generated pads for the approval-script rule: every 1- or 2-piece combination
+// of the pattern's own pieces (command-position starts, prefix words, flags,
+// quotes, separators, whitespace), repeated to 8KB. A linear rule answers each
+// in well under a millisecond; the quadratic first form took ~57ms on "$(" at
+// this size and the re-review's 3-piece scan found 326 slow pads. The ceiling
+// is 25ms per pad — a 25x+ margin over linear, and still under half of what the
+// smallest quadratic offender costs here — so this stays a shape assertion,
+// not a hardware-speed one.
+test('approval-script rule: no generated 1-2 piece pad of its own vocabulary is slow at 8KB', () => {
+  const rule = compass.loadRules().find(r => r.id === 'approve-' + 'pending-script');
+  assert.ok(rule, 'the approval-script rule is loaded');
+  const AP7 = 'app' + 'rove-';
+  const pieces = [')', 'a="', '(', '$(', 'node', 'node ', 'env ', '-', '-x', ' -x', 'a=', 'a=b ', '"', "'", '/', ' ', '\t', '\n',
+    'then ', 'if ', 'bash -c ', ';', 'x', '`', '{ ', '! ', AP7];
+  const N = 8000, CEILING_MS = 25;
+  const seen = new Set();
+  const slow = [];
+  let count = 0, worst = 0, worstUnit = '';
+  const started = Date.now();
+  for (const a of pieces) for (const b of ['', ...pieces]) {
+    const unit = a + b;
+    if (seen.has(unit)) continue;
+    seen.add(unit);
+    const s = pad(unit, N);
+    const t = process.hrtime.bigint();
+    compass.ruleTest(rule, s);
+    const ms = Number(process.hrtime.bigint() - t) / 1e6;
+    count++;
+    if (ms > worst) { worst = ms; worstUnit = unit; }
+    if (ms > CEILING_MS) slow.push(`${JSON.stringify(unit)} ${ms.toFixed(0)}ms`);
+  }
+  console.log(`        [note] ${count} generated pads in ${Date.now() - started}ms; slowest ${JSON.stringify(worstUnit)} ${worst.toFixed(1)}ms`);
+  assert.deepStrictEqual(slow, [], `slow pads at ${N}b: ${slow.slice(0, 20).join(', ')}`);
+});
 
 test('no benign payload on a newly-routed carrier is worse than it is on Bash', () => {
   const bad = [];
@@ -254,7 +328,7 @@ test('no benign payload on a newly-routed carrier is worse than it is on Bash', 
           bad.push(`${cell}: ${v2.active.classification} but Bash says ${onBash.active.classification}`);
         }
         // (2): the cost that turns into a kill at the hook.
-        if (ms > 1000) bad.push(`${cell}: ${ms}ms — heading for the 5,000ms hook kill`);
+        if (ms > 1000) bad.push(`${cell}: ${ms}ms — heading for the 8,000ms hook kill (hooks.json PreToolUse timeout 8)`);
       }
     }
   }
@@ -264,7 +338,8 @@ test('no benign payload on a newly-routed carrier is worse than it is on Bash', 
 
 test('Bash itself reaches a decision on every shape at every size — no new denial', () => {
   // fe8aa0c cleared all of these (measured: the worst was 1,978ms ALLOW at
-  // 150KB on the repeated-trigger shape, and a 5,000ms kill at 400KB). A
+  // 150KB on the repeated-trigger shape, and a kill at the then-5,000ms hook
+  // budget at 400KB). A
   // NOT_EVALUATED here would be a Bash regression, which the parity floor is
   // structurally forbidden from covering — only the linearisation can.
   // TWO ceilings, because two different things are being bounded.
@@ -274,7 +349,9 @@ test('Bash itself reaches a decision on every shape at every size — no new den
   // own. Measured worst case is 36ms at 800KB (fe8aa0c: 4ms — the second pass on
   // strings normalization actually changed), against 250ms.
   //
-  // The GATE ceiling is 3,000ms against the 5,000ms hook budget, matching
+  // The GATE ceiling is 3,000ms against the 8,000ms hook budget (hooks.json
+  // PreToolUse "timeout": 8; it was 5,000ms when these figures were first
+  // measured), matching
   // test/compass-fail-closed.js. It is looser because at 800KB the dominant term
   // is classifySemantic on the quote-churn shape, and that cost is PRE-EXISTING
   // and untouched: measured 1,216ms on fe8aa0c and 1,223ms here, same verdict

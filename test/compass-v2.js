@@ -9,6 +9,11 @@ const os = require('os');
 
 const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 't2helix-compass-v2-'));
 process.env.T2HELIX_DATA_DIR = tmpDir;
+// This suite approves tokens without the terminal origin, which the human-confirm
+// switch refuses (only origin cli approves while it is on). It asserts the
+// default-off behaviour, so it starts from the switch unset even when an
+// operator exported it in the shell.
+delete process.env.T2HELIX_REQUIRE_HUMAN_CONFIRM;
 // Default tests to enforce so semantic family migration is exercised.
 process.env.T2HELIX_COMPASS_V2 = 'enforce';
 
