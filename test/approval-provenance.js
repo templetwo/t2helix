@@ -596,7 +596,11 @@ function agentApproveCommands(token) {
     // command-position start too (security review of the class change).
     `X=$(true) node approve-pending ${token}`,
     `node "./a(1)/approve-pending.js" ${token}`,
-    `"./d(x)/approve-pending.js" ${token}`
+    `"./d(x)/approve-pending.js" ${token}`,
+    // Bare-name execution in command position (found off PATH): security
+    // review of the path-required form.
+    `PATH=scripts:$PATH approve-pending.js ${token}`,
+    `approve-pending ${token}`
   ];
 }
 
@@ -618,7 +622,8 @@ const AGENT_MENTION_COMMANDS = [
   'git show 98e5051:scripts/approve-pending.js',
   // A bare name in parentheses is a mention, not a run: direct execution
   // needs a path (a "/"), and nothing executes a bare name off PATH here.
-  'echo (approve-pending)'
+  'echo (approve-pending)',
+  'git log -- scripts/approve-pending.js'
 ];
 
 test('compass: a command that only mentions approve-pending (git add, git log --, git commit -m, gh pr create --body) is not denied by approve-pending-script, under legacy, V2 shadow and V2 enforce', () => {
