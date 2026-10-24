@@ -577,9 +577,64 @@ function agentApproveCommands(token) {
     `node ${APPROVE_SCRIPT} ${token}`,
     `node /Users/someone/.claude/plugins/cache/templetwo-t2helix/t2helix/abc/scripts/approve-pending.js ${token}`,
     `T2HELIX_DATA_DIR="$HOME/.claude/plugins/data/t2helix-templetwo-t2helix" node scripts/approve-pending.js --list`,
-    `cd /tmp && node ./Scripts/APPROVE-PENDING.js ${token}`
+    `cd /tmp && node ./Scripts/APPROVE-PENDING.js ${token}`,
+    `/opt/homebrew/bin/node scripts/approve-pending.js ${token}`,
+    `./scripts/approve-pending.js ${token}`,
+    `git status; ./scripts/approve-pending.js ${token}`,
+    `bash -c "node scripts/approve-pending.js ${token}"`,
+    `echo $(node scripts/approve-pending.js --list)`,
+    `env T2HELIX_DATA_DIR=/tmp/x node --no-warnings scripts/approve-pending.js ${token}`,
+    `cd /tmp\nnode scripts/approve-pending ${token}`
   ];
 }
+
+// The rule is narrowed to INVOCATION shapes (0.14.0, review D3). Before, any
+// command naming the file was a WITNESS with no override, so staging, logging
+// or describing the file from an agent session was hard-denied too. These are
+// mentions, not runs, and must stay open. Residual, stated: a quoted string
+// that itself begins a line with an invocation (a multi-line -m or --body whose
+// line starts "node .../approve-pending.js") still denies; write such text
+// through a file (git commit -F, gh pr create --body-file).
+const AGENT_MENTION_COMMANDS = [
+  'git add scripts/approve-pending.js',
+  'git add scripts/ test/ lib/',
+  'git log --oneline -- scripts/approve-pending.js',
+  'git commit -m "docs: comment in scripts/approve-pending.js"',
+  'git commit -m "narrow the approve-pending-script rule"',
+  'gh pr create --title "rule" --body "touches scripts/approve-pending.js and the approve-pending-script rule"',
+  'git diff HEAD~1 -- scripts/approve-pending.js',
+  'git show 98e5051:scripts/approve-pending.js'
+];
+
+test('compass: a command that only mentions approve-pending (git add, git log --, git commit -m, gh pr create --body) is not denied by approve-pending-script, under legacy, V2 shadow and V2 enforce', () => {
+  const prev = process.env.T2HELIX_COMPASS_V2;
+  try {
+    for (const command of AGENT_MENTION_COMMANDS) {
+      const payload = { tool_name: 'Bash', tool_input: { command } };
+      const legacy = compass.classify(payload);
+      assert.notStrictEqual(legacy.rule_id, 'approve-pending-script', `legacy still denies a mention: ${command}`);
+      assert.strictEqual(legacy.classification, 'OPEN', `legacy did not clear a mention: ${command} -> ${legacy.classification}/${legacy.rule_id}`);
+      for (const mode of ['shadow', 'enforce']) {
+        process.env.T2HELIX_COMPASS_V2 = mode;
+        const v2 = classifyV2(payload, {});
+        assert.notStrictEqual(v2.active.classification, 'WITNESS', `V2 ${mode} denies a mention: ${command}`);
+      }
+    }
+  } finally {
+    if (prev === undefined) delete process.env.T2HELIX_COMPASS_V2;
+    else process.env.T2HELIX_COMPASS_V2 = prev;
+  }
+});
+
+test('PreToolUse: git add of the approval script is not hard-denied', () => {
+  const r = runHook('pre-tool-use.js', {
+    session_id: 'ap-mention-' + Date.now(),
+    tool_name: 'Bash',
+    tool_input: { command: 'git add scripts/approve-pending.js' }
+  });
+  const decision = r.out.hookSpecificOutput && r.out.hookSpecificOutput.permissionDecision;
+  assert.notStrictEqual(decision, 'deny', `the hook denied a mention: ${JSON.stringify(r.out)}`);
+});
 
 test('compass: a shell command that runs approve-pending is WITNESS under legacy, V2 shadow and V2 enforce (real minted token)', () => {
   const p = ch.createPendingConfirmation({ session_id: 'ap-witness-' + Date.now(), action_summary: 'witness-' + Date.now() });

@@ -20,8 +20,11 @@
 // way), or because the named directory holds no chronicle.db.
 //
 // Hooks do not run in a human's own terminal. Inside an agent session the
-// bundled approve-pending-script WITNESS rule denies a shell command naming this
-// script wherever the PreToolUse hook runs. That is a speed bump, not a wall: an
+// bundled approve-pending-script WITNESS rule denies a shell command that RUNS
+// this script (node/nodejs/bun/deno on it, or executing it directly, in command
+// position) wherever the PreToolUse hook runs; a command that only mentions the
+// file (git add, git log, a commit message) is not denied. That is a speed bump,
+// not a wall: an
 // agent that can write files or the store has other ways to approve (README).
 
 const fs = require('fs');

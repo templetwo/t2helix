@@ -120,7 +120,9 @@ ship explicit-only, measure the generated-vs-promoted ratio first.
 - `WITNESS` — **hard deny, no override**: `rm -rf` wildcards, `git push --force`,
   `git reset --hard`, `drop table/database`, prod-mutating `kubectl/terraform/helm/aws/
   gcloud` (read-only verbs like get/list/describe are deliberately *not* gated),
-  `--no-verify`, a shell command naming `approve-pending` (the human approval path).
+  `--no-verify`, a shell command that runs `approve-pending` (the human approval path;
+  invocations only since 0.14.0, so `git add` / `git log --` / a commit message that
+  mentions the file is not denied).
   Changing these requires editing `compass-rules.json`.
 - `PAUSE` — **soft deny with a single-use token override** (credential-shaped patterns).
   See the override flow below.
@@ -148,8 +150,8 @@ scripts/approve-pending.js <token>` (origin `cli`; `--list` shows pending tokens
 run is refused with exit 2). It closes the MCP route only and is read in each process
 that serves `confirm_pending`. Against an agent with a shell and write access to the
 store it is a speed bump, not a wall: the refusal text names neither the script nor the
-listing, and the `approve-pending-script` WITNESS rule denies a shell command naming the
-script where the PreToolUse hook runs.
+listing, and the `approve-pending-script` WITNESS rule denies a shell command that runs
+the script where the PreToolUse hook runs.
 
 ## The fail-open / fail-safe contract (the invariant that governs every hook)
 
