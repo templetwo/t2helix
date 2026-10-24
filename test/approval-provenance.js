@@ -480,9 +480,13 @@ test('confirm_pending over MCP, switch set in the server\'s env: refused and lef
 const APPROVE_SCRIPT = path.join(__dirname, '..', 'scripts', 'approve-pending.js');
 const TMP_CHRONICLE = path.join(tmpDir, 'chronicle.db');
 
+// The Claude Code session markers the script refuses to run under. This suite
+// may itself run inside an agent session, so the human-path env strips them.
+const SESSION_MARKERS = ['CLAUDECODE', 'CLAUDE_CODE_ENTRYPOINT', 'CLAUDE_CODE_SESSION_ID', 'CLAUDE_PLUGIN_DATA', 'CLAUDE_PLUGIN_ROOT'];
+
 function approveEnv(overrides = {}) {
   const env = { ...process.env, T2HELIX_DATA_DIR: tmpDir };
-  delete env.CLAUDE_PLUGIN_DATA;
+  for (const m of SESSION_MARKERS) delete env[m];
   delete env.T2HELIX_REQUIRE_HUMAN_CONFIRM;
   for (const [k, v] of Object.entries(overrides)) {
     if (v === undefined) delete env[k];
@@ -491,19 +495,87 @@ function approveEnv(overrides = {}) {
   return env;
 }
 
-function runApprove(args, env) {
-  const res = spawnSync(process.execPath, [APPROVE_SCRIPT, ...args], { env, encoding: 'utf8' });
+// { tty: true } runs the script on a pseudo-terminal (python3's pty module,
+// present on macOS and the ubuntu CI runner), standing in for a human's
+// terminal: the script refuses a non-TTY stdin. Without it, stdin is a pipe,
+// which is what an agent's shell tool gives a child. If python3 is missing the
+// helper throws, so a tty test FAILS rather than skipping silently.
+const PTY_RUNNER = 'import os, pty, sys\nst = pty.spawn(sys.argv[1:])\nsys.exit(os.waitstatus_to_exitcode(st))';
+function runApprove(args, env, { tty = false } = {}) {
+  const res = tty
+    ? spawnSync('python3', ['-c', PTY_RUNNER, process.execPath, APPROVE_SCRIPT, ...args], { env, encoding: 'utf8', input: '' })
+    : spawnSync(process.execPath, [APPROVE_SCRIPT, ...args], { env, encoding: 'utf8' });
+  if (tty && res.error) throw new Error(`pseudo-terminal runner unavailable (python3): ${res.error.message}`);
+  const stdout = (res.stdout || '').replace(/\r\n/g, '\n');
   let out = null;
-  try { out = JSON.parse(res.stdout || ''); }
-  catch { out = { _unparseable: res.stdout }; }
-  return { code: res.status, out, raw: `${res.stdout || ''}${res.stderr || ''}` };
+  try { out = JSON.parse(stdout || ''); }
+  catch { out = { _unparseable: stdout }; }
+  return { code: res.status, out, raw: `${stdout}${res.stderr || ''}` };
 }
 
-test('approve-pending.js: a bare run (neither T2HELIX_DATA_DIR nor CLAUDE_PLUGIN_DATA) is refused with exit 2, names the path it resolved, and creates nothing', () => {
+// ── 5a. The script refuses to run where no human is at a terminal ───────────
+//
+// Provenance in the script itself, not only in the gate in front of it: a
+// non-TTY stdin, or any Claude Code session marker in the environment, and it
+// exits 2 with a one-line reason before opening any store.
+
+function storeSnapshot() {
+  const f = TMP_CHRONICLE;
+  return fs.existsSync(f) ? fs.statSync(f).mtimeMs + ':' + fs.statSync(f).size : 'absent';
+}
+
+test('approve-pending.js with stdin piped (not a TTY): <token> and --list exit 2, row still pending, no token printed', () => {
+  const sid = 'ap-notty-' + Date.now();
+  const p = ch.createPendingConfirmation({ session_id: sid, action_summary: 'notty-' + Date.now() });
+  for (const args of [[p.token], ['--list']]) {
+    const r = runApprove(args, approveEnv());
+    assert.strictEqual(r.code, 2, `${JSON.stringify(args)} piped must exit 2: ${r.raw}`);
+    assert.strictEqual(r.out.ok, false);
+    assert.ok(/terminal/i.test(r.out.error), `the refusal must say why: ${r.out.error}`);
+    assert.ok(!r.raw.includes(p.token), 'the refusal must not print a token');
+    assert.strictEqual(r.raw.trim().split('\n').length, 1, `the refusal is one line: ${r.raw}`);
+  }
+  const row = ch.listPendingConfirmations({ session_id: sid, limit: 10 })[0];
+  assert.strictEqual(row.status, 'pending', 'a refused run approves nothing');
+});
+
+test('approve-pending.js with stdin piped opens no store: an empty named directory stays empty', () => {
+  const empty = fs.mkdtempSync(path.join(os.tmpdir(), 't2helix-approve-notty-'));
+  const r = runApprove(['0123456789abcdef'], approveEnv({ T2HELIX_DATA_DIR: empty }));
+  assert.strictEqual(r.code, 2, r.raw);
+  assert.ok(/terminal/i.test(r.out.error), r.raw);
+  assert.deepStrictEqual(fs.readdirSync(empty), []);
+});
+
+test('approve-pending.js on a TTY but with any Claude Code session marker set: exit 2, row still pending, store untouched', () => {
+  const sid = 'ap-marker-' + Date.now();
+  const p = ch.createPendingConfirmation({ session_id: sid, action_summary: 'marker-' + Date.now() });
+  const before = storeSnapshot();
+  for (const marker of SESSION_MARKERS) {
+    for (const args of [[p.token], ['--list']]) {
+      const r = runApprove(args, approveEnv({ [marker]: '1' }), { tty: true });
+      assert.strictEqual(r.code, 2, `${marker} ${JSON.stringify(args)} must exit 2: ${r.raw}`);
+      assert.ok(new RegExp(marker).test(r.out.error), `the refusal must name the marker ${marker}: ${r.raw}`);
+      assert.ok(!r.raw.includes(p.token), `${marker}: the refusal printed the token`);
+    }
+  }
+  assert.strictEqual(storeSnapshot(), before, 'a refused run must not write the store');
+  assert.strictEqual(ch.listPendingConfirmations({ session_id: sid, limit: 10 })[0].status, 'pending');
+});
+
+test('approve-pending.js --help names the terminal refusal and touches no store', () => {
+  const empty = fs.mkdtempSync(path.join(os.tmpdir(), 't2helix-approve-help-'));
+  const r = runApprove(['--help'], approveEnv({ T2HELIX_DATA_DIR: empty }));
+  assert.strictEqual(r.code, 0, r.raw);
+  assert.ok(/terminal/i.test(r.raw) && /CLAUDECODE/.test(r.raw), `--help must say where it refuses to run: ${r.raw}`);
+  assert.deepStrictEqual(fs.readdirSync(empty), []);
+});
+
+test('approve-pending.js: a bare run (no T2HELIX_DATA_DIR) on a terminal is refused with exit 2, names the path it resolved, and creates nothing', () => {
   const home = fs.mkdtempSync(path.join(os.tmpdir(), 't2helix-approve-home-'));
   const env = approveEnv({ T2HELIX_DATA_DIR: undefined, HOME: home });
   for (const args of [['0123456789abcdef'], ['--list'], []]) {
-    const r = runApprove(args, env);
+    const r = runApprove(args, env, { tty: true });
     assert.strictEqual(r.code, 2, `bare run ${JSON.stringify(args)} must exit 2: ${r.raw}`);
     assert.strictEqual(r.out.ok, false);
     assert.strictEqual(r.out.chronicle, path.join(home, '.t2helix-data', 'chronicle.db'),
@@ -515,7 +587,7 @@ test('approve-pending.js: a bare run (neither T2HELIX_DATA_DIR nor CLAUDE_PLUGIN
 
 test('approve-pending.js: a named directory with no chronicle.db is refused with exit 2 and left empty', () => {
   const empty = fs.mkdtempSync(path.join(os.tmpdir(), 't2helix-approve-empty-'));
-  const r = runApprove(['0123456789abcdef'], approveEnv({ T2HELIX_DATA_DIR: empty }));
+  const r = runApprove(['0123456789abcdef'], approveEnv({ T2HELIX_DATA_DIR: empty }), { tty: true });
   assert.strictEqual(r.code, 2, r.raw);
   assert.strictEqual(r.out.ok, false);
   assert.strictEqual(r.out.chronicle, path.join(empty, 'chronicle.db'));
@@ -525,7 +597,9 @@ test('approve-pending.js: a named directory with no chronicle.db is refused with
 test('approve-pending.js <token> with the switch set: approves as origin cli and names the chronicle it wrote', () => {
   const sid = 'ap-script-ok-' + Date.now();
   const p = ch.createPendingConfirmation({ session_id: sid, action_summary: 'script-ok-' + Date.now() });
-  const r = runApprove([p.token], approveEnv({ T2HELIX_REQUIRE_HUMAN_CONFIRM: '1' }));
+  // Positive control for the terminal refusal: on a pseudo-terminal with no
+  // session marker, the script proceeds to the token lookup and approves.
+  const r = runApprove([p.token], approveEnv({ T2HELIX_REQUIRE_HUMAN_CONFIRM: '1' }), { tty: true });
   assert.strictEqual(r.code, 0, r.raw);
   assert.strictEqual(r.out.ok, true);
   assert.strictEqual(r.out.origin, 'cli');
@@ -537,7 +611,7 @@ test('approve-pending.js <token> with the switch set: approves as origin cli and
 
 test('approve-pending.js: an unknown token or a missing argument exits 1 and still names the chronicle', () => {
   for (const args of [['ffffffffffffffff'], []]) {
-    const r = runApprove(args, approveEnv());
+    const r = runApprove(args, approveEnv(), { tty: true });
     assert.strictEqual(r.code, 1, `${JSON.stringify(args)}: ${r.raw}`);
     assert.strictEqual(r.out.ok, false);
     assert.strictEqual(r.out.chronicle, TMP_CHRONICLE);
@@ -549,7 +623,7 @@ test('approve-pending.js --list: each pending request with its id, action summar
   const a = ch.createPendingConfirmation({ session_id: sid, action_summary: 'list-a-' + Date.now(), rule_matched: 'credential-paste' });
   const b = ch.createPendingConfirmation({ session_id: sid, action_summary: 'list-b-' + Date.now() });
   ch.approveConfirmation({ token: b.token, origin: 'cli' });
-  const r = runApprove(['--list'], approveEnv());
+  const r = runApprove(['--list'], approveEnv(), { tty: true });
   assert.strictEqual(r.code, 0, r.raw);
   assert.strictEqual(r.out.chronicle, TMP_CHRONICLE);
   const mine = (r.out.pending || []).filter(e => e.token === a.token || e.token === b.token);

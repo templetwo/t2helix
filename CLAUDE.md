@@ -15,7 +15,7 @@ no build step and no transpile; the runtime is plain CommonJS on Node 20–26.
 ## Commands
 
 ```bash
-npm test            # full suite: all 20 test files in package.json (657 tests at 0.14.0)
+npm test            # full suite: all 20 test files in package.json (661 tests at 0.14.0)
 npm run smoke       # lib unit tests (chronicle CRUD, FTS, compass rules, coupling, redaction)
 npm run regression  # MCP tool contract over stdio JSON-RPC
 npm run integration # spawns the real hooks; asserts shipped wiring + PAUSE override loop + scrub
@@ -152,7 +152,8 @@ Each of those reads the switch in its own process, so it must be set wherever th
 server, the hooks and the adapter run. A human approves outside the agent session with
 `T2HELIX_DATA_DIR="$HOME/.claude/plugins/data/t2helix-<marketplace>" node
 scripts/approve-pending.js <token>` (origin `cli`; `--list` shows pending tokens; a bare
-run is refused with exit 2). It closes every in-process route except the terminal one.
+run is refused with exit 2, and so is any run without a TTY stdin or with a Claude Code
+session marker such as `CLAUDECODE` set, before any store is opened). It closes every in-process route except the terminal one.
 Against an agent with a shell and write access to the
 store it is a speed bump, not a wall: the refusal text names neither the script nor the
 listing, and the `approve-pending-script` WITNESS rule denies a shell command that runs

@@ -86,9 +86,15 @@ behaviour (the switch's first form never shipped); this list says what changed.
 - `scripts/approve-pending.js`, the human path, recorded as origin `cli`:
   `T2HELIX_DATA_DIR="$HOME/.claude/plugins/data/t2helix-<marketplace>" node scripts/approve-pending.js <token>`.
   `--list` shows each pending request's id, action summary, token and expiry.
-  Every result names the chronicle it used. A run with neither
-  `T2HELIX_DATA_DIR` nor `CLAUDE_PLUGIN_DATA` set, or one naming a directory
-  with no `chronicle.db`, is refused with exit 2 and creates nothing.
+  Every result past the terminal check names the chronicle it used. A run
+  without `T2HELIX_DATA_DIR`, or one naming a directory with no
+  `chronicle.db`, is refused with exit 2 and creates nothing.
+- The approval script refuses to run (exit 2, one-line reason, no store
+  opened) unless it is at a human's terminal: stdin must be a TTY, and none of
+  `CLAUDECODE`, `CLAUDE_CODE_ENTRYPOINT`, `CLAUDE_CODE_SESSION_ID`,
+  `CLAUDE_PLUGIN_DATA`, `CLAUDE_PLUGIN_ROOT` may be set. `--list` is under the
+  same refusal; `--help` says so. This narrows where it runs; a
+  pseudo-terminal still passes, so it is not proof of a human.
 - Bundled WITNESS rule `approve-pending-script`: a shell command that runs
   `approve-pending` (node/nodejs/bun/deno on it, or executing it directly, in
   a command position) is hard-denied where the PreToolUse hook runs; a
