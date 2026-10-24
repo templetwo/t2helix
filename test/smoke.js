@@ -7,6 +7,11 @@ const assert = require('assert');
 
 const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 't2helix-smoke-'));
 process.env.T2HELIX_DATA_DIR = tmpDir;
+// This suite approves tokens without the terminal origin, which the human-confirm
+// switch refuses (only origin cli approves while it is on). It asserts the
+// default-off behaviour, so it starts from the switch unset even when an
+// operator exported it in the shell.
+delete process.env.T2HELIX_REQUIRE_HUMAN_CONFIRM;
 
 const ch = require('../lib/chronicle');
 const compass = require('../lib/compass');

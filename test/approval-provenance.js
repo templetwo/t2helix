@@ -356,6 +356,76 @@ test('with the switch set, origin cli → approved, approved_origin recorded cli
   }
 });
 
+// While the switch is on, the origin is an ALLOWLIST of one: only 'cli' (the
+// terminal path) approves. A denylist of 'mcp' let any other label through —
+// an unattributed call, a 'test' or 'codex' origin — so the switch closed one
+// door by name and left the others open. Matching is exact after the usual
+// trim: 'CLI' is not 'cli', because no human surface passes it.
+
+function approveUnderSwitch(origin, switchValue = '1') {
+  // An explicit undefined would take the default '1', so 'unset' names the unset case.
+  if (switchValue === 'unset') delete process.env.T2HELIX_REQUIRE_HUMAN_CONFIRM;
+  else process.env.T2HELIX_REQUIRE_HUMAN_CONFIRM = switchValue;
+  try {
+    const sid = 'ap-allow-' + String(origin) + '-' + Date.now() + '-' + Math.random().toString(36).slice(2, 8);
+    const p = ch.createPendingConfirmation({ session_id: sid, action_summary: 'allow-' + sid });
+    const args = { token: p.token };
+    if (origin !== undefined) args.origin = origin;
+    const r = ch.approveConfirmation(args);
+    const row = ch.listPendingConfirmations({ session_id: sid, limit: 10 })[0];
+    return { r, row, token: p.token };
+  } finally {
+    delete process.env.T2HELIX_REQUIRE_HUMAN_CONFIRM;
+  }
+}
+
+test('with the switch set, an unattributed approval (no origin) → refused, row still pending', () => {
+  const { r, row } = approveUnderSwitch(undefined);
+  assert.strictEqual(r.ok, false, `an unattributed approval went through under the switch: ${JSON.stringify(r)}`);
+  assert.strictEqual(r.pending, true);
+  assert.ok(/T2HELIX_REQUIRE_HUMAN_CONFIRM/.test(String(r.error)), `the refusal must name the switch: ${r.error}`);
+  assert.strictEqual(row.status, 'pending');
+  assert.strictEqual(row.approved_origin, null);
+});
+
+test('with the switch set, any origin other than cli (test, codex, grok, sse, CLI, blank) → refused, row still pending', () => {
+  for (const origin of ['test', 'codex', 'grok', 'sse', 'CLI', '', '   ', 'cli-ish', 'unattributed']) {
+    const { r, row } = approveUnderSwitch(origin);
+    assert.strictEqual(r.ok, false, `origin ${JSON.stringify(origin)} approved under the switch`);
+    assert.strictEqual(r.pending, true, `origin ${JSON.stringify(origin)}: refusal must say still pending`);
+    assert.strictEqual(row.status, 'pending', `origin ${JSON.stringify(origin)}: row left ${row.status}`);
+  }
+});
+
+test('with the switch set to true or on, cli still approves and mcp is still refused (every spelling of on)', () => {
+  for (const v of ['1', 'true', 'on', ' ON ']) {
+    assert.strictEqual(approveUnderSwitch('cli', v).r.ok, true, `cli refused with switch=${JSON.stringify(v)}`);
+    assert.strictEqual(approveUnderSwitch('mcp', v).r.ok, false, `mcp approved with switch=${JSON.stringify(v)}`);
+  }
+});
+
+test('with the switch unset (or off), every origin approves exactly as before and is recorded as given', () => {
+  for (const sw of ['unset', '0', 'off', '']) {
+    for (const [origin, recorded] of [[undefined, 'unattributed'], ['test', 'test'], ['codex', 'codex'], ['mcp', 'mcp'], ['cli', 'cli'], ['CLI', 'CLI']]) {
+      const { r, row } = approveUnderSwitch(origin, sw);
+      assert.strictEqual(r.ok, true, `switch=${JSON.stringify(sw)} origin=${JSON.stringify(origin)} refused: ${JSON.stringify(r)}`);
+      assert.strictEqual(row.status, 'approved');
+      assert.strictEqual(row.approved_origin, recorded);
+    }
+  }
+});
+
+test('with the switch set, the refusal for a non-cli origin names no script, listing or token, and is not MCP-specific', () => {
+  for (const origin of [undefined, 'test', 'mcp']) {
+    const { r, token } = approveUnderSwitch(origin);
+    const msg = String(r.error);
+    assert.ok(!/approve-pending|scripts\//.test(msg), `the refusal names the approval script: ${msg}`);
+    assert.ok(!/list_pending/.test(msg), `the refusal points at the token listing: ${msg}`);
+    assert.ok(!msg.includes(token), 'the refusal carries the token');
+    assert.ok(!/^MCP-origin/.test(msg), `the refusal is worded as if only MCP were refused: ${msg}`);
+  }
+});
+
 test('with the switch set, the mcp-origin refusal says a human approves outside the agent session, and names no script, listing or token', () => {
   process.env.T2HELIX_REQUIRE_HUMAN_CONFIRM = '1';
   try {
