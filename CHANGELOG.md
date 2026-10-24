@@ -22,7 +22,8 @@ detection and its Deferred auto-surface bullet below; that text stays as
 history.
 
 ### Fixed (review follow-up to PR #12, cut as 0.14.0)
-Where this list and the Added bullets below disagree, this list is current.
+The Added bullets below were edited in place to describe the released
+behaviour (the switch's first form never shipped); this list says what changed.
 - **Under the human-confirm switch only origin `cli` approves.** The switch
   first refused origin `mcp` by name and let every other origin through;
   `approveConfirmation` is now an allowlist of one while the switch is on
@@ -39,8 +40,11 @@ Where this list and the Added bullets below disagree, this list is current.
   `nodejs` / `bun` / `deno` running the script, or executing it directly, in
   command position, is still WITNESS with no override; `git add`, `git log
   --`, `git commit -m` and `gh pr create --body` that only name the file are
-  no longer denied. Residual: a quoted string whose line itself begins with
-  an invocation still denies.
+  no longer denied. Shell-keyword positions (`then`, `do`, `else`, `elif`,
+  `{`, `!`) count as command positions. Residuals: a quoted string whose line
+  itself begins with an invocation still denies; a quoted executable, a flag
+  with a separate argument (`node -r x`), `timeout N node`, `xargs node` and
+  `node -e` are not matched.
 - **Test isolation.** Six suites (regression, integration,
   approval-provenance, and, because the allowlist made them switch-sensitive,
   smoke, compass-v2, compass-fail-closed) unset the switch at the top, so
@@ -59,22 +63,27 @@ Where this list and the Added bullets below disagree, this list is current.
   detection.
 
 ### Added
-- `T2HELIX_REQUIRE_HUMAN_CONFIRM=1` makes `confirm_pending` refuse approvals
-  that arrive from the model-facing MCP surface (origin `mcp`); the row stays
-  pending for a human. Default off. The refusal the model receives names
-  neither the approval script nor where tokens are listed. Plainly: the switch
-  closes the MCP route only, and it must be set in the environment of every
-  process that serves `confirm_pending`. Against an agent that has a shell and
-  write access to the store it is a speed bump, not a wall. See README.
+- `T2HELIX_REQUIRE_HUMAN_CONFIRM=1` (also `true`/`on`) makes approval an
+  allowlist of origin `cli`: approvals from the model-facing MCP surface
+  (origin `mcp`), with no origin or with any other origin are refused and the
+  row stays pending for a human. Default off. The refusal the model receives
+  names neither the approval script nor where tokens are listed. Plainly: the
+  switch closes every in-process route except the terminal one, and it must
+  be set in the environment of every process that serves `confirm_pending` /
+  `list_pending`, runs the hooks or hosts the Grok adapter. Against an agent
+  that has a shell and write access to the store it is a speed bump, not a
+  wall. See README.
 - `scripts/approve-pending.js`, the human path, recorded as origin `cli`:
   `T2HELIX_DATA_DIR="$HOME/.claude/plugins/data/t2helix-<marketplace>" node scripts/approve-pending.js <token>`.
   `--list` shows each pending request's id, action summary, token and expiry.
   Every result names the chronicle it used. A run with neither
   `T2HELIX_DATA_DIR` nor `CLAUDE_PLUGIN_DATA` set, or one naming a directory
   with no `chronicle.db`, is refused with exit 2 and creates nothing.
-- Bundled WITNESS rule `approve-pending-script`: a shell command naming
-  `approve-pending` is hard-denied, reads included, where the PreToolUse hook
-  runs. A human's own terminal runs no hook, so the human path stays open.
+- Bundled WITNESS rule `approve-pending-script`: a shell command that runs
+  `approve-pending` (node/nodejs/bun/deno on it, or executing it directly, in
+  a command position) is hard-denied where the PreToolUse hook runs; a
+  command that only mentions the file is not. A human's own terminal runs no
+  hook, so the human path stays open.
 - `test/approval-provenance.js` pins the switch, the refusal text, the
   terminal script and the rule; `test/compass-fail-closed.js` seeds the rule.
 
