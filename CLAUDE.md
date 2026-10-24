@@ -15,7 +15,7 @@ no build step and no transpile; the runtime is plain CommonJS on Node 20–26.
 ## Commands
 
 ```bash
-npm test            # full suite: all 20 test files in package.json (655 tests at 0.14.0)
+npm test            # full suite: all 20 test files in package.json (657 tests at 0.14.0)
 npm run smoke       # lib unit tests (chronicle CRUD, FTS, compass rules, coupling, redaction)
 npm run regression  # MCP tool contract over stdio JSON-RPC
 npm run integration # spawns the real hooks; asserts shipped wiring + PAUSE override loop + scrub

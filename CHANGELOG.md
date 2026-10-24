@@ -40,11 +40,17 @@ behaviour (the switch's first form never shipped); this list says what changed.
   `nodejs` / `bun` / `deno` running the script, or executing it directly, in
   command position, is still WITNESS with no override; `git add`, `git log
   --`, `git commit -m` and `gh pr create --body` that only name the file are
-  no longer denied. Shell-keyword positions (`then`, `do`, `else`, `elif`,
-  `{`, `!`) count as command positions. Residuals: a quoted string whose line
-  itself begins with an invocation still denies; a quoted executable, a flag
-  with a separate argument (`node -r x`), `timeout N node`, `xargs node` and
-  `node -e` are not matched.
+  no longer denied. Shell-keyword positions (`if`, `while`, `until`, `then`,
+  `do`, `else`, `elif`, `{`, `!`) count as command positions. Every class
+  after a command-position start excludes `(`, `)` and backtick, so runs of
+  `(` / `$(` stay linear (a first form took 3.6 s at 64 KB and hid
+  credential-paste behind NOT_EVALUATED at the hook on a 120 KB pad).
+  Residuals: false positives where `;`, `|`, `(` or `&` inside a quoted string
+  is followed by an invocation (write such text through a file); not matched:
+  a redirect with no space, `env -i`, `sudo -u`, `nice -n`, `time -p`,
+  `exec -a`, `bash -lc`, `eval`, `npx node`, stdin feeds (`cat f | node -`,
+  `node < f`), variables, a flag with a separate argument (`node -r x`),
+  `timeout N node`, `xargs node`, `A=$(...) node`.
 - **Test isolation.** Six suites (regression, integration,
   approval-provenance, and, because the allowlist made them switch-sensitive,
   smoke, compass-v2, compass-fail-closed) unset the switch at the top, so
