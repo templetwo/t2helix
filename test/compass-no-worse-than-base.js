@@ -226,10 +226,55 @@ const BENIGN_SHAPES = {
   // shape and belongs in this list rather than in the exploit set.
   'aperiodic-hex-run': n => 'echo ' + APERIODIC.hexRun(n),
   'aperiodic-alnum-run': n => 'echo ' + APERIODIC.alnum36Run(n),
-  'aperiodic-mixedcase-run': n => 'echo ' + APERIODIC.alnum62Run(n)
+  'aperiodic-mixedcase-run': n => 'echo ' + APERIODIC.alnum62Run(n),
+  // ── RUNS OF COMMAND-POSITION STARTS (0.14.0 re-review) ───────────────────
+  //
+  // The narrowed approval-script rule treats "(" and "$(" as command-position
+  // starts. Its first form let the classes AFTER a start accept "(", so every
+  // "(" in an unbroken run restarted a scan to the end: 3.6s at 64KB, killed at
+  // 800KB, and at the real hook a 120KB pad took 14s against the 8s budget and
+  // hid credential-paste behind NOT_EVALUATED. Subshells and command
+  // substitution are ordinary shell, so these are benign shapes.
+  'dollar-paren-run': n => 'echo ' + pad('$(', n),
+  'paren-run': n => 'echo ' + pad('(', n)
 };
 
 const SIZES = [20000, 80000, 150000, 180000, 200000, 400000, 800000];
+
+// Generated pads for the approval-script rule: every 1- or 2-piece combination
+// of the pattern's own pieces (command-position starts, prefix words, flags,
+// quotes, separators, whitespace), repeated to 8KB. A linear rule answers each
+// in well under a millisecond; the quadratic first form took ~57ms on "$(" at
+// this size and the re-review's 3-piece scan found 326 slow pads. The ceiling
+// is 25ms per pad — a 25x+ margin over linear, and still under half of what the
+// smallest quadratic offender costs here — so this stays a shape assertion,
+// not a hardware-speed one.
+test('approval-script rule: no generated 1-2 piece pad of its own vocabulary is slow at 8KB', () => {
+  const rule = compass.loadRules().find(r => r.id === 'approve-' + 'pending-script');
+  assert.ok(rule, 'the approval-script rule is loaded');
+  const AP7 = 'app' + 'rove-';
+  const pieces = ['(', '$(', 'node', 'node ', 'env ', '-', '-x', ' -x', 'a=', 'a=b ', '"', "'", '/', ' ', '\t', '\n',
+    'then ', 'if ', 'bash -c ', ';', 'x', '`', '{ ', '! ', AP7];
+  const N = 8000, CEILING_MS = 25;
+  const seen = new Set();
+  const slow = [];
+  let count = 0, worst = 0, worstUnit = '';
+  const started = Date.now();
+  for (const a of pieces) for (const b of ['', ...pieces]) {
+    const unit = a + b;
+    if (seen.has(unit)) continue;
+    seen.add(unit);
+    const s = pad(unit, N);
+    const t = process.hrtime.bigint();
+    compass.ruleTest(rule, s);
+    const ms = Number(process.hrtime.bigint() - t) / 1e6;
+    count++;
+    if (ms > worst) { worst = ms; worstUnit = unit; }
+    if (ms > CEILING_MS) slow.push(`${JSON.stringify(unit)} ${ms.toFixed(0)}ms`);
+  }
+  console.log(`        [note] ${count} generated pads in ${Date.now() - started}ms; slowest ${JSON.stringify(worstUnit)} ${worst.toFixed(1)}ms`);
+  assert.deepStrictEqual(slow, [], `slow pads at ${N}b: ${slow.slice(0, 20).join(', ')}`);
+});
 
 test('no benign payload on a newly-routed carrier is worse than it is on Bash', () => {
   const bad = [];
