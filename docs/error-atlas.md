@@ -2,10 +2,11 @@
 
 A curated corpus of common error→fix pairs, loaded into the chronicle as
 recallable `domain:'error-fix'` knowledge. It closes a specific gap: the helix
-already *detects* failure (`lib/outcome.js` tags `outcome:failure` on
-`Traceback` / `SyntaxError` / `TypeError` / `ModuleNotFoundError` /
-`AssertionError` / `fatal:` / `Error:`), but until now it could not say *how to
-fix* what it detected.
+already *detects* failure (`lib/outcome.js` tags `outcome:failure` only on an
+interrupted call or an Edit/Write error string; failure text in an accepted Bash
+response is ambiguous and left untagged since the 2026-10-23 change, so the
+atlas is reached through `recall()` on the error text itself), but until now it
+could not say *how to fix* what it detected.
 
 ## Shape
 
@@ -91,9 +92,10 @@ therefore written with `created_at = 0`, so `recencyBoost` is 0: a strong
 error-token match still ranks high (its bm25 term dominates), but a generic query
 never pulls an atlas entry up on recency alone.
 
-Deferred (additive follow-up): trigger the lookup automatically on PostToolUse
-`outcome:failure` and inject the resolution. This stays within the existing
-authority model — the hook remains record-only and silent; fixes surface via
+Deferred (additive follow-up): trigger the lookup automatically from a
+`PostToolUseFailure` hook's `error` text (not yet registered) and inject the
+resolution. This stays within the existing authority model — the hook remains
+record-only and silent; fixes surface via
 `recall()` and `coupling.escalateByMemory()` (OPEN→PAUSE only), never a hook
 hard-block. Pattern wildcards may want a normalization/LIKE pass to complement
 FTS-token matching for the variable spans.

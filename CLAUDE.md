@@ -120,7 +120,8 @@ ship explicit-only, measure the generated-vs-promoted ratio first.
 - `WITNESS` — **hard deny, no override**: `rm -rf` wildcards, `git push --force`,
   `git reset --hard`, `drop table/database`, prod-mutating `kubectl/terraform/helm/aws/
   gcloud` (read-only verbs like get/list/describe are deliberately *not* gated),
-  `--no-verify`. Changing these requires editing `compass-rules.json`.
+  `--no-verify`, a shell command naming `approve-pending` (the human approval path).
+  Changing these requires editing `compass-rules.json`.
 - `PAUSE` — **soft deny with a single-use token override** (credential-shaped patterns).
   See the override flow below.
 
@@ -139,6 +140,16 @@ identical action within 10 minutes**. Approvals record where they came from
 model-facing MCP surface is legible as one. The retry consumes the approval atomically
 (`consumeApproval` is a compare-and-swap `status='approved' → 'used'`, so a token can
 never be double-spent across racing hook processes), and re-logs the call as `OPEN`.
+
+`T2HELIX_REQUIRE_HUMAN_CONFIRM=1` (default off) makes `approveConfirmation` refuse origin
+`mcp` and leave the row pending; a human approves outside the agent session with
+`T2HELIX_DATA_DIR="$HOME/.claude/plugins/data/t2helix-<marketplace>" node
+scripts/approve-pending.js <token>` (origin `cli`; `--list` shows pending tokens; a bare
+run is refused with exit 2). It closes the MCP route only and is read in each process
+that serves `confirm_pending`. Against an agent with a shell and write access to the
+store it is a speed bump, not a wall: the refusal text names neither the script nor the
+listing, and the `approve-pending-script` WITNESS rule denies a shell command naming the
+script where the PreToolUse hook runs.
 
 ## The fail-open / fail-safe contract (the invariant that governs every hook)
 

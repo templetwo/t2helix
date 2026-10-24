@@ -3,6 +3,54 @@
 All notable changes to t2helix are documented here. Format loosely follows
 [Keep a Changelog](https://keepachangelog.com/); versioning is [SemVer](https://semver.org/).
 
+## [Unreleased] — 2026-10-23 — the tagger stops learning failures from quoted text
+
+`lib/outcome.js` no longer tags a Bash response `outcome:failure` because its
+text contains `FAILED`, `AssertionError`, a traceback, `Error:` or `fatal:`.
+PostToolUse only receives calls the harness accepted and the payload carries
+no exit code, so that text was a deliberate RED test run, a brief that says a
+test FAILS, a quoted traceback, or a real crash hidden behind a pipe, and the
+tag could not tell which. Ambiguous is now untagged, as the module's own
+contract always said; `interrupted` still tags failure; backgrounded or
+harness-interpreted responses are untagged; clean accepted calls still tag
+`outcome:success`. Measured on one MacBook: 109 Bash rows tagged
+`outcome:failure` in two days, most of them on successful commands (at least
+19 were real crashes behind a pipe; those are now untagged, not labelled);
+the `memory:similar-failures` rule fired 19 PAUSEs in that window, 14 of them
+on Bash. This entry supersedes the [0.10.0] description of text-based failure
+detection and its Deferred auto-surface bullet below; that text stays as
+history.
+
+### Changed
+- `lib/outcome.js`: `bashOutcome` returns `null` for failure text, for
+  `backgroundTaskId` / `timedOutAfterMs` / `backgroundedByUser`, and for
+  `returnCodeInterpretation`; exports `FAILURE_TEXT_PATTERNS` for tests.
+- `test/smoke.js`, `test/integration.js`: assertions follow the contract; a new
+  integration test runs three RED-text PostToolUse echoes and shows PreToolUse
+  does not PAUSE the command.
+- `docs/error-atlas.md`, `README.md`: no longer promise text-based failure
+  detection.
+
+### Added
+- `T2HELIX_REQUIRE_HUMAN_CONFIRM=1` makes `confirm_pending` refuse approvals
+  that arrive from the model-facing MCP surface (origin `mcp`); the row stays
+  pending for a human. Default off. The refusal the model receives names
+  neither the approval script nor where tokens are listed. Plainly: the switch
+  closes the MCP route only, and it must be set in the environment of every
+  process that serves `confirm_pending`. Against an agent that has a shell and
+  write access to the store it is a speed bump, not a wall. See README.
+- `scripts/approve-pending.js`, the human path, recorded as origin `cli`:
+  `T2HELIX_DATA_DIR="$HOME/.claude/plugins/data/t2helix-<marketplace>" node scripts/approve-pending.js <token>`.
+  `--list` shows each pending request's id, action summary, token and expiry.
+  Every result names the chronicle it used. A run with neither
+  `T2HELIX_DATA_DIR` nor `CLAUDE_PLUGIN_DATA` set, or one naming a directory
+  with no `chronicle.db`, is refused with exit 2 and creates nothing.
+- Bundled WITNESS rule `approve-pending-script`: a shell command naming
+  `approve-pending` is hard-denied, reads included, where the PreToolUse hook
+  runs. A human's own terminal runs no hook, so the human path stays open.
+- `test/approval-provenance.js` pins the switch, the refusal text, the
+  terminal script and the rule; `test/compass-fail-closed.js` seeds the rule.
+
 ## [0.13.1] — 2026-08-30 — the credential gate stops stalling on code
 
 Cut from the merge of `fix/secret-assign-requires-literal-value` (7ee32ff) onto

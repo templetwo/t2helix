@@ -242,6 +242,7 @@ const ADVERSARIAL_SEEDS = {
   'drop-table-or-db':   { trigger: 'drop table ', tail: 'users' },
   'deploy-prod':        { trigger: 'kubectl apply ', tail: '--namespace prod' },
   'no-verify':          { trigger: 'git commit ', tail: '--no-verify' },
+  'approve-pending-script': { trigger: 'approve-', tail: 'pending' },
   'credential-paste':   { trigger: 'password=', tail: 'hunter2hunter2' },
   'grok-direct-mutate': { trigger: 'raw-mutate ', tail: 'raw-mutate' },
   // Not bundled — this repo's own .t2helix/policy.json. Seeded anyway: repo-local

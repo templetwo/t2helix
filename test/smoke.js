@@ -486,23 +486,23 @@ test('outcome: Bash with clean stdout and empty stderr → success', () => {
   assert.strictEqual(r, 'success');
 });
 
-test('outcome: Bash with pytest FAILED in stdout → failure', () => {
+test('outcome: Bash with pytest FAILED in stdout → null (ambiguous text is untagged)', () => {
   const r = detectOutcome('Bash', { stdout: 'test_foo FAILED\n1 passed, 1 failed', stderr: '', interrupted: false });
-  assert.strictEqual(r, 'failure');
+  assert.strictEqual(r, null);
 });
 
-test('outcome: Bash with Python Traceback in stdout → failure', () => {
+test('outcome: Bash with Python Traceback in stdout → null (ambiguous text is untagged)', () => {
   const r = detectOutcome('Bash', {
     stdout: 'Traceback (most recent call last):\n  File "x.py", line 1, in <module>\n    raise ValueError()',
     stderr: '',
     interrupted: false
   });
-  assert.strictEqual(r, 'failure');
+  assert.strictEqual(r, null);
 });
 
-test('outcome: Bash with "fatal:" in stderr → failure (git error shape)', () => {
+test('outcome: Bash with "fatal:" in stderr → null (ambiguous text is untagged)', () => {
   const r = detectOutcome('Bash', { stdout: '', stderr: 'fatal: not a git repository', interrupted: false });
-  assert.strictEqual(r, 'failure');
+  assert.strictEqual(r, null);
 });
 
 test('outcome: Bash with deprecation warning in stderr → success (warning ≠ error)', () => {
@@ -517,6 +517,25 @@ test('outcome: Bash with deprecation warning in stderr → success (warning ≠ 
 test('outcome: any tool with interrupted=true → failure (universal signal)', () => {
   assert.strictEqual(detectOutcome('Bash', { stdout: '', stderr: '', interrupted: true }), 'failure');
   assert.strictEqual(detectOutcome('Edit', { interrupted: true }), 'failure');
+});
+
+test('outcome: Bash moved to the background → null (no outcome yet)', () => {
+  assert.strictEqual(detectOutcome('Bash', { stdout: '', stderr: '', interrupted: false, backgroundTaskId: 'b1', timedOutAfterMs: 120000 }), null);
+  assert.strictEqual(detectOutcome('Bash', { stdout: '', stderr: '', interrupted: false, backgroundTaskId: 'b2' }), null);
+  assert.strictEqual(detectOutcome('Bash', { stdout: '', stderr: '', interrupted: false, backgroundedByUser: true }), null);
+});
+
+test('outcome: Bash with a harness-interpreted exit (returnCodeInterpretation) → null', () => {
+  assert.strictEqual(detectOutcome('Bash', { stdout: '', stderr: '', interrupted: false, returnCodeInterpretation: 'No matches found' }), null);
+});
+
+test('outcome: Bash RED unittest transcript at exit 0 → null, never failure or success', () => {
+  const red = 'FAIL: test_x (tests.test_mod.T)\nTraceback (most recent call last):\n  File "t.py", line 3, in test_x\nAssertionError: False is not true\n\nFAILED (failures=1)\n';
+  assert.strictEqual(detectOutcome('Bash', { stdout: red, stderr: '', interrupted: false }), null);
+});
+
+test('outcome: Bash clean exit with no failure text still → success', () => {
+  assert.strictEqual(detectOutcome('Bash', { stdout: 'Ran 47 tests in 1.7s\n\nOK\n', stderr: '', interrupted: false }), 'success');
 });
 
 test('outcome: Edit with object response → success', () => {
