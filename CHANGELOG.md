@@ -51,6 +51,20 @@ history.
 - `test/approval-provenance.js` pins the switch, the refusal text, the
   terminal script and the rule; `test/compass-fail-closed.js` seeds the rule.
 
+### Consequences, named
+- **`lib/distill.js`'s success gate now admits more sessions.** Its gate is
+  "real `outcome:success` and not a single detected `outcome:failure`". Bash
+  rows whose only failure signal was text (a quoted or deliberate `FAILED`, a
+  traceback, `Error:` behind an accepted call, including a real crash hidden
+  behind a pipe) used to count as failures and kept a session out; they are
+  now untagged, so such a session can distill a method candidate. Candidates
+  stay quarantined in `method_candidates` and surface nothing until a human
+  promotes one with `promote_method`.
+- **The coupling goes quieter for Bash.** After this change the only Bash
+  `outcome:failure` source is an interrupted run (`interrupted: true`), so
+  `memory:similar-failures` can escalate a Bash command OPEN→PAUSE only on a
+  history of interrupted runs. Edit/Write error strings still tag failure.
+
 ## [0.13.1] — 2026-08-30 — the credential gate stops stalling on code
 
 Cut from the merge of `fix/secret-assign-requires-literal-value` (7ee32ff) onto
