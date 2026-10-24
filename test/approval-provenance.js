@@ -584,7 +584,11 @@ function agentApproveCommands(token) {
     `bash -c "node scripts/approve-pending.js ${token}"`,
     `echo $(node scripts/approve-pending.js --list)`,
     `env T2HELIX_DATA_DIR=/tmp/x node --no-warnings scripts/approve-pending.js ${token}`,
-    `cd /tmp\nnode scripts/approve-pending ${token}`
+    `cd /tmp\nnode scripts/approve-pending ${token}`,
+    `if true; then node scripts/approve-pending.js ${token}; fi`,
+    `for t in a; do ./scripts/approve-pending.js ${token}; done`,
+    `{ node scripts/approve-pending.js ${token}; }`,
+    `! node scripts/approve-pending.js ${token}`
   ];
 }
 
