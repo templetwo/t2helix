@@ -3,7 +3,7 @@
 All notable changes to t2helix are documented here. Format loosely follows
 [Keep a Changelog](https://keepachangelog.com/); versioning is [SemVer](https://semver.org/).
 
-## [Unreleased] — 2026-10-23 — the tagger stops learning failures from quoted text
+## [0.14.0] — 2026-10-24 — the tagger stops learning failures from quoted text
 
 `lib/outcome.js` no longer tags a Bash response `outcome:failure` because its
 text contains `FAILED`, `AssertionError`, a traceback, `Error:` or `fatal:`.
@@ -20,6 +20,33 @@ the `memory:similar-failures` rule fired 19 PAUSEs in that window, 14 of them
 on Bash. This entry supersedes the [0.10.0] description of text-based failure
 detection and its Deferred auto-surface bullet below; that text stays as
 history.
+
+### Fixed (review follow-up to PR #12, cut as 0.14.0)
+Where this list and the Added bullets below disagree, this list is current.
+- **Under the human-confirm switch only origin `cli` approves.** The switch
+  first refused origin `mcp` by name and let every other origin through;
+  `approveConfirmation` is now an allowlist of one while the switch is on
+  (`mcp`, `unattributed`, `CLI` and every other label refused, row left
+  pending). Switch off: unchanged. New `lib/human-confirm.js`.
+- **Model-facing text follows the switch.** With it on, `list_pending`
+  withholds tokens (rows kept, `token_withheld: true`, a note), and the PAUSE
+  deny text, the `memory:similar-failures` reason and the Grok adapter's
+  PAUSE result say approval is a human's from a terminal, naming no script,
+  path or token; the adapter also withholds its `pending_token`.
+  `MESSAGE_VERSION` is `decision-message/0.14.0`. Each process reads the
+  switch itself, so set it wherever the MCP server, hooks and adapter run.
+- **`approve-pending-script` denies invocations, not mentions.** `node` /
+  `nodejs` / `bun` / `deno` running the script, or executing it directly, in
+  command position, is still WITNESS with no override; `git add`, `git log
+  --`, `git commit -m` and `gh pr create --body` that only name the file are
+  no longer denied. Residual: a quoted string whose line itself begins with
+  an invocation still denies.
+- **Test isolation.** Six suites (regression, integration,
+  approval-provenance, and, because the allowlist made them switch-sensitive,
+  smoke, compass-v2, compass-fail-closed) unset the switch at the top, so
+  `npm test` passes with it exported.
+- Docs: tool count fifteen (CLAUDE.md), test count from the suite, the README
+  v0.1.0 bullet restored as history.
 
 ### Changed
 - `lib/outcome.js`: `bashOutcome` returns `null` for failure text, for

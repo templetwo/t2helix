@@ -1,6 +1,6 @@
 {
   "name": "t2helix",
-  "version": "0.13.1",
+  "version": "0.14.0",
   "description": "Persistent recall and pre-action compass for Claude Code. Local-only, SQLite-backed. Compass V2 Action IR.",
   "license": "Apache-2.0",
   "author": "Anthony Vasquez Sr. (templetwo)",
