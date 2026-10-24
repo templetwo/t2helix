@@ -328,7 +328,7 @@ test('no benign payload on a newly-routed carrier is worse than it is on Bash', 
           bad.push(`${cell}: ${v2.active.classification} but Bash says ${onBash.active.classification}`);
         }
         // (2): the cost that turns into a kill at the hook.
-        if (ms > 1000) bad.push(`${cell}: ${ms}ms — heading for the 5,000ms hook kill`);
+        if (ms > 1000) bad.push(`${cell}: ${ms}ms — heading for the 8,000ms hook kill (hooks.json PreToolUse timeout 8)`);
       }
     }
   }
@@ -338,7 +338,8 @@ test('no benign payload on a newly-routed carrier is worse than it is on Bash', 
 
 test('Bash itself reaches a decision on every shape at every size — no new denial', () => {
   // fe8aa0c cleared all of these (measured: the worst was 1,978ms ALLOW at
-  // 150KB on the repeated-trigger shape, and a 5,000ms kill at 400KB). A
+  // 150KB on the repeated-trigger shape, and a kill at the then-5,000ms hook
+  // budget at 400KB). A
   // NOT_EVALUATED here would be a Bash regression, which the parity floor is
   // structurally forbidden from covering — only the linearisation can.
   // TWO ceilings, because two different things are being bounded.
@@ -348,7 +349,9 @@ test('Bash itself reaches a decision on every shape at every size — no new den
   // own. Measured worst case is 36ms at 800KB (fe8aa0c: 4ms — the second pass on
   // strings normalization actually changed), against 250ms.
   //
-  // The GATE ceiling is 3,000ms against the 5,000ms hook budget, matching
+  // The GATE ceiling is 3,000ms against the 8,000ms hook budget (hooks.json
+  // PreToolUse "timeout": 8; it was 5,000ms when these figures were first
+  // measured), matching
   // test/compass-fail-closed.js. It is looser because at 800KB the dominant term
   // is classifySemantic on the quote-churn shape, and that cost is PRE-EXISTING
   // and untouched: measured 1,216ms on fe8aa0c and 1,223ms here, same verdict
