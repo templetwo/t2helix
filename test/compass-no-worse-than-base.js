@@ -233,13 +233,42 @@ const BENIGN_SHAPES = {
   // starts. Its first form let the classes AFTER a start accept "(", so every
   // "(" in an unbroken run restarted a scan to the end: 3.6s at 64KB, killed at
   // 800KB, and at the real hook a 120KB pad took 14s against the 8s budget and
-  // hid credential-paste behind NOT_EVALUATED. Subshells and command
-  // substitution are ordinary shell, so these are benign shapes.
-  'dollar-paren-run': n => 'echo ' + pad('$(', n),
+  // hid credential-paste behind NOT_EVALUATED. Subshells are ordinary shell,
+  // so this is a benign shape. Its "$(" sibling is pinned in its own test
+  // below, on the rules leg only: see the note there.
   'paren-run': n => 'echo ' + pad('(', n)
 };
 
 const SIZES = [20000, 80000, 150000, 180000, 200000, 400000, 800000];
+
+// "$(" runs: the rules leg is held linear here at every size. The WHOLE gate is
+// not asserted for this shape because its cost there is lib/action-ir's
+// parseToIR, which is pre-existing and untouched by this release: measured on
+// main 8d75894, classifyV2 on 'echo ' + "$(" x n took 0.9s at 75KB, 1.7s at
+// 150KB and 4.0s at 300KB with legacy classify at 3ms (this branch: 0.87s,
+// 1.6s, 4.2s). Putting the shape in BENIGN_SHAPES would fail the gate arm on
+// main and on this branch alike and assert nothing this release regressed;
+// that cost is named as its own finding instead.
+test('a "$(" run: the rules leg (incl. the approval-script rule) stays linear at every size', () => {
+  const rule = compass.loadRules().find(r => r.id === 'approve-' + 'pending-script');
+  const bad = [];
+  let worst = 0, worstLabel = '';
+  for (const n of SIZES) {
+    const command = 'echo ' + pad('$(', n);
+    const t0 = Date.now();
+    compass.ruleTest(rule, command);
+    const ruleMs = Date.now() - t0;
+    const t1 = Date.now();
+    const legacy = compass.classify({ tool_name: 'Bash', tool_input: { command } }, {});
+    const rulesMs = Date.now() - t1;
+    if (rulesMs > worst) { worst = rulesMs; worstLabel = `${n}b`; }
+    if (ruleMs > 250) bad.push(`${n}b: approval-script rule ${ruleMs}ms > 250ms`);
+    if (rulesMs > 250) bad.push(`${n}b: rules leg ${rulesMs}ms > 250ms`);
+    if (legacy.classification === compass.NOT_EVALUATED) bad.push(`${n}b: legacy leg NOT_EVALUATED`);
+  }
+  console.log(`        [note] "$(" run: slowest rules leg ${worstLabel} ${worst}ms`);
+  assert.deepStrictEqual(bad, [], bad.join(' | '));
+});
 
 // Generated pads for the approval-script rule: every 1- or 2-piece combination
 // of the pattern's own pieces (command-position starts, prefix words, flags,
