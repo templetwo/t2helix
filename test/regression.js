@@ -16,6 +16,11 @@ const assert = require('assert');
 
 const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 't2helix-regression-'));
 process.env.T2HELIX_DATA_DIR = tmpDir;
+// The human-confirm switch is read from the environment by every process that
+// approves, and this suite asserts the default-off behaviour (or sets the switch
+// per test). An operator who exported it in the shell would otherwise turn the
+// default-off assertions red, so the suite starts from the switch unset.
+delete process.env.T2HELIX_REQUIRE_HUMAN_CONFIRM;
 
 // lib/chronicle is used only to seed compass_log and pending_confirmations,
 // since their write paths are exercised by hooks (PreToolUse) rather than
